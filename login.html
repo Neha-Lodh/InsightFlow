@@ -227,6 +227,16 @@
       display: none
     }
 
+    .okmsg {
+      background: #F0FDF4;
+      color: #166534;
+      border: 1px solid #BBF7D0;
+      border-radius: 11px;
+      padding: 10px 12px;
+      margin-bottom: 14px;
+      font-size: 13px
+    }
+
     .foot {
       text-align: center;
       color: var(--mut);
@@ -251,6 +261,7 @@
         <button role="tab" id="t-reg" aria-selected="false" aria-controls="f-reg">Create account</button>
       </div>
       <div class="alert" id="err" role="alert" hidden></div>
+      <div class="okmsg" id="ok" role="status" hidden></div>
 
       <form id="f-login" role="tabpanel" aria-labelledby="t-login" novalidate>
         <h1>Welcome back</h1>
@@ -294,11 +305,11 @@
   <script>
     const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
     const err = $('#err');
-    function showErr(m) { err.textContent = m; err.hidden = !m }
+    function showErr(m) { err.textContent = m; err.hidden = !m; if (m) $('#ok').hidden = true }
     function tab(which) {
       const reg = which === 'reg';
       $('#t-login').setAttribute('aria-selected', !reg); $('#t-reg').setAttribute('aria-selected', reg);
-      $('#f-login').hidden = reg; $('#f-reg').hidden = !reg; showErr(''); clearFields();
+      $('#f-login').hidden = reg; $('#f-reg').hidden = !reg; showErr(''); $('#ok').hidden = true; clearFields();
       document.title = (reg ? 'Create account' : 'Sign in') + ' — InsightFlow';
       history.replaceState(null, '', reg ? '#register' : '#');
       ($(reg ? '#r-un' : '#l-id')).focus();
@@ -343,7 +354,11 @@
       submitting(e.target, true);
       try {
         const { ok, j } = await post('/api/register', body);
-        if (ok) return go();
+        if (ok) {
+          tab('login'); $('#l-id').value = body.username; $('#l-pw').value = '';
+          $('#ok').textContent = 'Account created. Please sign in with your username and password.'; $('#ok').hidden = false; $('#l-pw').focus();
+          e.target.reset(); submitting(e.target, false); return;
+        }
         if (j.fields) paint(j.fields); else showErr(j.error || 'Could not create the account.');
       } catch { showErr('Could not reach the server. Is it running?') }
       submitting(e.target, false);
