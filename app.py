@@ -16,7 +16,32 @@ st.markdown(f"<style>{(Path(__file__).parent / 'style.css').read_text(encoding='
 E = html.escape
 NAV = ["🏠  Dashboard", "🔍  Data Explorer", "💬  Ask a Question", "⚠️  Data Quality", "📄  Reports", "⚙️  Settings"]
 ROLE_ICO = {"numeric": "🔢", "categorical": "🏷️", "datetime": "🗓️", "text": "📝", "identifier": "🔑"}
-st.session_state.setdefault("history", []); st.session_state.setdefault("user", "Neha")
+
+# ---------- Login / registration gate (same accounts database as the web app) ----------
+import users
+if "account" not in st.session_state:
+    _, mid, _ = st.columns([1, 1.2, 1])
+    with mid:
+        if FULL.exists(): st.image(str(FULL), use_container_width=True)
+        t_in, t_reg = st.tabs(["Sign in", "Create account"])
+        with t_in, st.form("login_form"):
+            ident = st.text_input("Username or email"); pw = st.text_input("Password", type="password")
+            if st.form_submit_button("Sign in", type="primary", use_container_width=True):
+                u = users.authenticate(ident, pw)
+                if u: st.session_state.account = u; st.session_state.user = u["username"]; st.rerun()
+                else: st.error("Incorrect username/email or password.")
+        with t_reg, st.form("register_form"):
+            ru = st.text_input("Username"); re_ = st.text_input("Email")
+            rp = st.text_input("Password", type="password", help="At least 8 characters, with letters and numbers.")
+            rc = st.text_input("Confirm password", type="password")
+            if st.form_submit_button("Create account", type="primary", use_container_width=True):
+                errs = users.validate_registration(ru.strip(), re_.strip(), rp, rc)
+                u, errs2 = ({}, errs) if errs else users.create_user(ru, re_, rp)
+                if errs2: st.error(next(iter(errs2.values())))
+                else: st.session_state.account = u; st.session_state.user = u["username"]; st.rerun()
+    st.stop()
+
+st.session_state.setdefault("history", [])
 
 def style(fig):
     fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", margin=dict(l=10, r=10, t=45, b=10),
@@ -35,6 +60,10 @@ with st.sidebar:
     st.markdown(f'<img class="logofull" src="data:image/png;base64,{FULL_B64}" alt="InsightFlow">' if FULL_B64 else '<div class="brand"><b class="wm"><span style="color:#7B5BE0">Insight</span><span style="color:#EC8BCB">Flow</span></b></div>', unsafe_allow_html=True)
     page = st.radio("nav", NAV, key="nav", label_visibility="collapsed")
     up = st.file_uploader("Upload dataset", type=list(core.EXTS))
+    st.caption(f"Signed in as **{st.session_state.account['username']}**")
+    if st.button("Log out", use_container_width=True):
+        for k in ("account", "user", "history"): st.session_state.pop(k, None)
+        st.rerun()
 
 c1, c2 = st.columns([5, 1.3])
 search = c1.text_input("search", placeholder="🔎  Search columns, insights...", label_visibility="collapsed")

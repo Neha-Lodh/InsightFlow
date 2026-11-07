@@ -2,19 +2,37 @@
 import io, json, os
 from pathlib import Path
 import pandas as pd
-from flask import Flask, jsonify, request, send_file
+from datetime import timedelta
+from flask import Flask, jsonify, request, send_file, send_from_directory
+import auth
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024
 HERE = Path(__file__).parent
 
+# --- accounts / sessions ---
+app.config.update(
+    SECRET_KEY=auth.load_secret_key(),
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=bool(os.environ.get("PORT")),  # hosted = HTTPS; local http://localhost keeps working
+    PERMANENT_SESSION_LIFETIME=timedelta(days=30),        # used when "Remember me" is ticked
+)
+app.register_blueprint(auth.bp)
+
+@app.get("/assets/<path:name>")
+def assets(name):  # public: the login page needs the logo
+    return send_from_directory(HERE / "assets", name)
+
 @app.get("/")
+@auth.login_required
 def index():
     r = send_file(HERE / "insightflow_ui.html")
     r.headers["Cache-Control"] = "no-store"  # always load the newest page
     return r
 
 @app.post("/api/excel")
+@auth.login_required
 def excel():
     f = request.files.get("file")
     if not f or not f.filename.lower().endswith((".xlsx", ".xls")):
