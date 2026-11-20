@@ -1,7 +1,7 @@
 
 
 """Core engine: load -> clean -> profile -> parse question -> safe execute -> insights."""
-import io, json, os, re, warnings
+import html as _html, io, json, os, re, warnings
 import numpy as np, pandas as pd, plotly.express as px
  
 MAX_MB = 20
@@ -246,15 +246,17 @@ def auto_insights(df, prof):
 # ---------- HTML report ----------
 def report_html(name, raw, df, prof, log, items):
     h = lambda t: f"<h2>{t}</h2>"
-    parts = [f"<h1>Automated Analysis Report — {name}</h1>", h("1. Dataset Overview"), f"<p>{prof['summary']}</p>",
+    esc = lambda t: _html.escape(str(t))  # never put raw filenames/questions into HTML
+    name = esc(name)
+    parts = [f"<h1>Automated Analysis Report — {name}</h1>", h("1. Dataset Overview"), f"<p>{esc(prof['summary'])}</p>",
              h("2. Data Quality"), f"<p>Missing values (raw): {prof['missing']}. Duplicate rows (raw): {prof['duplicates']}.</p>",
-             h("3. Cleaning Performed"), "<ul>" + "".join(f"<li>{x}</li>" for x in log) + "</ul>",
-             h("4. Descriptive Statistics"), df.describe().T.round(2).to_html(classes="t"),
-             h("5. Key Findings"), "<ul>" + "".join(f"<li>{x}</li>" for x in auto_insights(df, prof)) + "</ul>"]
+             h("3. Cleaning Performed"), "<ul>" + "".join(f"<li>{esc(x)}</li>" for x in log) + "</ul>",
+             h("4. Descriptive Statistics"), df.describe().T.round(2).to_html(classes="t", escape=True),
+             h("5. Key Findings"), "<ul>" + "".join(f"<li>{esc(x)}</li>" for x in auto_insights(df, prof)) + "</ul>"]
     if items:
         parts.append(h("6. Analyses and Charts"))
         for q, r in items:
-            parts.append(f"<h3>{q}</h3><p>{r['text']}</p>")
+            parts.append(f"<h3>{esc(q)}</h3><p>{esc(r['text'])}</p>")
             if r["fig"] is not None: parts.append(r["fig"].to_html(full_html=False, include_plotlyjs="cdn"))
     parts += [h("7. Conclusions"), "<p>All figures above were computed directly from the uploaded data; recommendations should be drawn only from these observed patterns.</p>"]
     return "<html><head><meta charset='utf-8'><style>body{font-family:Arial;max-width:960px;margin:auto}.t{border-collapse:collapse}.t td,.t th{border:1px solid #ccc;padding:4px}</style></head><body>" + "".join(parts) + "</body></html>"
