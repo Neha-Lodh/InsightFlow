@@ -90,6 +90,7 @@ def register():
     if errors:
         return jsonify(error=next(iter(errors.values())), fields=errors), 409
     _signups[ip].append(time.time())
+    _start_session(user, remember=True)  # sign the new user in straight away
     return jsonify(user=user), 201
 
 

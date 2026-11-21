@@ -1151,7 +1151,7 @@
             $('#det1').innerHTML = `<select data-s="col" style="width:100%;margin-bottom:10px">${cs.map(c => `<option${c == col ? ' selected' : ''}>${esc(c)}</option>`).join('')}</select>` + [
                 `<div style="display:flex;gap:12px;align-items:center"><div class="ic" style="background:var(--soft2,#EDE4FD);width:46px;height:46px">${RI[role]}</div><div><h2>${esc(col)}</h2><span class="badge pr">${role}</span></div></div><div class="row"><span>Completeness</span><b>${comp.toFixed(1)}%</b></div><div class="bar"><i style="width:${comp}%"></i></div><div class="row"><span>Unique values</span><b>${new Set(v).size.toLocaleString()}</b></div><div class="row"><span>Missing (raw)</span><b>${D.miss[col]}</b></div><p class="sub" style="margin-top:10px">Top values</p>` + tv.map(x => `<div class="rel"><span>${fx(x[0])}</span><b>${x[1]}</b></div>`).join('') + `<button class="btn" style="width:100%;margin-top:14px" data-go="explorer">View Full Details →</button>`,
                 st.map(x => `<div class="row"><span>${x[0]}</span><b>${x[1]}</b></div>`).join(''), insights(rs).slice(0, 5).map(x => `<div class="rel">${esc(x)}</div>`).join('')][tab];
-            $('#rq').innerHTML = HIST.slice(-4).reverse().map(h => `<div class="item" style="background:#F7F2FC;border-color:var(--line)"><b>${esc(h.q)}</b><small>${esc(h.text.slice(0, 80))}</small></div>`).join('') || '<p class="sub">No questions yet. Open “Ask a Question”.</p>';
+            $('#rq').innerHTML = HIST.slice(-4).reverse().map(h => `<div class="item" style="background:var(--soft,#F7F2FC);border-color:var(--line)"><b>${esc(h.q)}</b><small>${esc(h.text.slice(0, 80))}</small></div>`).join('') || '<p class="sub">No questions yet. Open “Ask a Question”.</p>';
             $('#an').innerHTML = anomalies().slice(0, 3).map(a => `<div class="item"><b>${esc(a[0])}</b> <span class="badge ${a[2]}">${a[2]}</span><small>${esc(a[1])}</small></div>`).join('') || '<p class="sub">No anomalies detected.</p>';
             $('#ac').innerHTML = LOG.slice(0, 5).map(x => `<div><span class="ic" style="background:var(--soft2,#F1E9FB)">${/date/.test(x) ? '🗓️' : /Removed/.test(x) ? '🧹' : '🩹'}</span><span>${esc(x)}</span><small>on upload</small></div>`).join(''); fillGal(rs)
         }
@@ -1208,7 +1208,7 @@
         function applyTheme(name) {
             const root = document.documentElement.style, vars = ['--bg', '--line', '--tint', '--ink', '--mut', '--pri', '--pink', '--priD', '--aside', '--g1', '--g2', '--navtxt', '--foot', '--av1', '--av2', '--b1', '--b2', '--ink2', '--shadow', '--graph', '--rowb', '--soft', '--soft2', '--itembg', '--itemb', '--dropb', '--dropbg', '--grid2'];
             THEME_ON = name !== 'Violet Pink';
-            if (!THEME_ON) { vars.forEach(v => root.removeProperty(v)); return }
+            if (!THEME_ON) { vars.forEach(v => root.removeProperty(v)); try { localStorage.removeItem('if_theme') } catch { } setBar(); return }
             const [h1, s1, l1] = hsl(PAL[0]), [h2, s2, l2] = hsl(PAL[1] || PAL[0]), S1 = clamp(s1, 35, 90), S2 = clamp(s2, 35, 90), L1 = clamp(l1, 28, 46), L2 = clamp(l2, 34, 58);
             const pri = h2x(h1, S1, L1), acc = h2x(h2, S2, L2), rgb = pri.slice(1).match(/../g).map(v => parseInt(v, 16)).join(',');
             Object.entries({
@@ -1217,10 +1217,20 @@
                 '--b1': h2x(h1, 75, 95), '--b2': h2x(h2, 85, 94.5), '--shadow': `rgba(${rgb},.08)`, '--graph': h2x(h1, 70, 98.5), '--rowb': h2x(h1, 45, 95), '--soft': h2x(h1, 55, 96.5), '--soft2': h2x(h1, 50, 93.5),
                 '--itembg': h2x(h2, 100, 97.5), '--itemb': h2x(h2, 70, 92), '--dropb': h2x(h1, 60, 81), '--dropbg': h2x(h1, 100, 98.7), '--grid2': h2x(h1, 40, 89)
             }).forEach(([k, v]) => root.setProperty(k, v));
+            try { const t = {}; vars.forEach(v => { const x = root.getPropertyValue(v); if (x) t[v] = x }); localStorage.setItem('if_theme', JSON.stringify(t)) } catch { }  // lets the sign-in page match
+            setBar();
+        }
+        function setBar() { const m = document.querySelector('meta[name=theme-color]') || document.head.appendChild(Object.assign(document.createElement('meta'), { name: 'theme-color' })); m.content = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || '#FBF6FC' }
+        /* charts already drawn (chat answers, report) keep their old colours unless we swap them */
+        function remapPal(o, n) {
+            if (!o || o === n) return;
+            const swap = s => { let t = s; o.forEach((c, k) => { t = t.split(c).join('@@P' + k + '@@').split(c.toLowerCase()).join('@@P' + k + '@@') }); n.forEach((c, k) => { t = t.split('@@P' + k + '@@').join(c) }); return t };
+            HIST.forEach(h => { if (h.svg) h.svg = swap(h.svg) });
+            $('#chat').innerHTML = swap($('#chat').innerHTML)
         }
 
-        $('#pal').innerHTML = Object.keys(PALS).map(k => `<option>${k}</option>`).join(''); $('#pal').onchange = e => { PAL = PALS[e.target.value]; applyTheme(e.target.value); try { localStorage.setItem('if_pal', e.target.value) } catch { } fillDash(); fillOther() };
-        $('#cc').oninput = e => { PALS['Custom'] = custom(e.target.value); PAL = PALS['Custom']; $('#pal').value = 'Custom'; applyTheme('Custom'); try { localStorage.setItem('if_pal', 'Custom'); localStorage.setItem('if_cc', e.target.value) } catch { } fillDash(); fillOther() };
+        $('#pal').innerHTML = Object.keys(PALS).map(k => `<option>${k}</option>`).join(''); $('#pal').onchange = e => { const old = PAL; PAL = PALS[e.target.value]; remapPal(old, PAL); applyTheme(e.target.value); try { localStorage.setItem('if_pal', e.target.value) } catch { } fillDash(); fillOther() };
+        $('#cc').oninput = e => { const old = PAL; PALS['Custom'] = custom(e.target.value); PAL = PALS['Custom']; remapPal(old, PAL); $('#pal').value = 'Custom'; applyTheme('Custom'); try { localStorage.setItem('if_pal', 'Custom'); localStorage.setItem('if_cc', e.target.value) } catch { } fillDash(); fillOther() };
         try { const sp = localStorage.getItem('if_pal'), sc = localStorage.getItem('if_cc'); if (sp && PALS[sp]) { if (sp === 'Custom' && sc) { PALS.Custom = custom(sc); $('#cc').value = sc } PAL = PALS[sp]; $('#pal').value = sp; applyTheme(sp) } } catch { }
         go('dash'); sample();
         /* ---- account: who is logged in, log out, session expiry ---- */
