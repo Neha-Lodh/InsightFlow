@@ -61,6 +61,7 @@
     }
 
     .logo {
+      filter: var(--logof, none);
       display: block;
       width: 210px;
       max-width: 70%;
@@ -356,7 +357,9 @@
       try {
         const { ok, j } = await post('/api/register', body);
         if (ok) {
-          e.target.reset(); return go();  // account created and signed in -> straight to the dashboard
+          tab('login'); $('#l-id').value = body.username; $('#l-pw').value = '';
+          $('#ok').textContent = 'Account created. Please sign in with your username and password.'; $('#ok').hidden = false; $('#l-pw').focus();
+          e.target.reset(); submitting(e.target, false); return;
         }
         if (j.fields) paint(j.fields); else showErr(j.error || 'Could not create the account.');
       } catch { showErr('Could not reach the server. Is it running?') }

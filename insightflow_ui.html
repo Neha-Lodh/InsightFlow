@@ -845,10 +845,73 @@
         }
 
         .logofull {
+            filter: var(--logof, none);
             width: 100%;
             height: auto;
             border-radius: 14px;
             display: block
+        }
+
+        /* ---- bold theme: applied when a palette other than the default is chosen ---- */
+        body.th {
+            background: radial-gradient(1100px 460px at 85% -8%, var(--g1), transparent 70%), var(--bg)
+        }
+
+        body.th aside {
+            background: linear-gradient(180deg, var(--sb1), var(--sb2));
+            border-right: 0
+        }
+
+        body.th nav button {
+            color: rgba(255, 255, 255, .86)
+        }
+
+        body.th nav button:hover {
+            background: rgba(255, 255, 255, .13)
+        }
+
+        body.th nav button.on {
+            background: rgba(255, 255, 255, .2);
+            color: #fff;
+            box-shadow: inset 3px 0 0 #fff
+        }
+
+        body.th .foot {
+            color: rgba(255, 255, 255, .6)
+        }
+
+        body.th .banner {
+            background: linear-gradient(100deg, var(--pri), var(--pink));
+            border-color: transparent;
+            color: #fff
+        }
+
+        body.th .banner h1,
+        body.th .banner p,
+        body.th .banner .sub {
+            color: #fff
+        }
+
+        body.th .search,
+        body.th .user {
+            background: rgba(255, 255, 255, .88)
+        }
+
+        body.th .card {
+            border-top: 3px solid var(--pri);
+            box-shadow: 0 8px 24px var(--shadow)
+        }
+
+        body.th .graph {
+            background: var(--graph)
+        }
+
+        body.th h2 {
+            color: var(--priD)
+        }
+
+        body.th .stat {
+            border-color: var(--line)
         }
     </style>
     <link rel="icon"
@@ -1140,7 +1203,7 @@
             const rs = R(), o = outl(rs), N = cols('numeric'), C = cols('categorical'), Dt = cols('date'), opts = [...C, ...Dt];
             $('#bn').textContent = `Welcome back, ${USER}!`; $('#bs').textContent = `${D.name} is ready. Explore, ask questions and discover insights from your data.`;
             const kp = [['📄', 'Total Rows', rs.length.toLocaleString(), `${D.n.toLocaleString()} before cleaning`, '#FFF1F8', '#FBD5E8'], ['🧬', 'Columns', D.cols.length, ['numeric', 'categorical', 'date'].map(r => cols(r).length + ' ' + r).join(', '), '#F8F1FF', '#E4D5FA'], ['🔗', 'Missing Values', Object.values(D.miss).reduce((a, b) => a + b, 0), 'handled during cleaning', '#FFF1F5', '#FAD3DD'], ['⚠️', 'Duplicate Rows', D.dup, 'removed during cleaning', '#FFF6EE', '#FCDDC3'], ['🛡️', 'Outliers', Object.values(o).reduce((a, b) => a + b, 0), 'IQR rule, current view', '#F1F5FF', '#D4E0FA']];
-            $('#stats').innerHTML = kp.map((s, k) => `<div class="stat" style="--t:${THEME_ON ? tint(PAL[k % PAL.length], 96) : s[4]};--i:${THEME_ON ? tint(PAL[k % PAL.length], 88) : s[5]}"><div class="ic">${s[0]}</div><div class="l">${s[1]}</div><div class="v">${s[2]}</div><div class="up" style="color:var(--pri)">${esc(s[3])}</div></div>`).join('');
+            $('#stats').innerHTML = kp.map((s, k) => `<div class="stat" style="--t:${THEME_ON ? tint(PAL[$('#pal').value === 'Custom' ? k % 2 : k % PAL.length], 91) : s[4]};--i:${THEME_ON ? tint(PAL[$('#pal').value === 'Custom' ? k % 2 : k % PAL.length], 82) : s[5]}"><div class="ic">${s[0]}</div><div class="l">${s[1]}</div><div class="v">${s[2]}</div><div class="up" style="color:var(--pri)">${esc(s[3])}</div></div>`).join('');
             const m = N.includes(ES.m) ? ES.m : MM(N) || '(row count)', g = opts.includes(ES.g) ? ES.g : opts[0], ag = ES.agg || 'sum', isD = Dt.includes(g), ch = ES.ch || (isD ? 'Line' : 'Bar'); let d = [], tx = '';
             if (g) { d = grp(rs, r => isD ? (r[g] != null ? gk(r[g], AGc(g)) : null) : r[g], N.includes(m) ? m : null, ag); d = isD ? d.sort((a, b) => a[0] < b[0] ? -1 : 1) : d.sort((a, b) => b[1] - a[1]).slice(0, 12); if (d.length) { const t = d.reduce((s, x) => s + x[1], 0), tp = d.reduce((a, b) => b[1] > a[1] ? b : a); tx = `${tp[0]} is highest at ${fmt(tp[1])}` + (ag == 'sum' && t > 0 ? ` (${(tp[1] / t * 100).toFixed(1)}% of the shown total).` : '.') } }
             $('#ex').innerHTML = `<h2>Dashboard Explorer</h2><p class="sub">Choose what to measure and how to break it down.</p><div class="sel"><label>Measure${sel('m', N.length ? N : ['(row count)'], m)}</label><label>Break down by${sel('g', opts.length ? opts : ['(none)'], g)}</label><label>Aggregation${sel('agg', ['sum', 'mean', 'count'], ag)}</label><label>Chart${sel('ch', Object.keys(CT), ch)}</label></div><div class="graph" style="background:#fff">${g ? chart(CT[ch] || 'bar', d) : '<p class="sub" style="padding:14px">No category or date column to break down by.</p>'}</div>${tx ? `<div class="item" style="background:var(--soft,#F6F0FF);border-color:var(--line);margin-top:10px">💡 ${esc(tx)}</div>` : ''}`;
@@ -1201,21 +1264,21 @@
         const custom = x => [x, ...[35, 70, 150, 180, 215, 250, 300].map(o => h2x((hueOf(x) + o) % 360, 68, 56))];
         PALS['Custom'] = custom('#7C3AED');
         /* ---- theme: the whole interface follows the selected chart palette ---- */
-        let THEME_ON = false;
+        let THEME_ON = false, GREY = false;
         const hsl = x => { const r = parseInt(x.slice(1, 3), 16) / 255, g = parseInt(x.slice(3, 5), 16) / 255, b = parseInt(x.slice(5, 7), 16) / 255, M = Math.max(r, g, b), m = Math.min(r, g, b), l = (M + m) / 2, d = M - m; return [hueOf(x), d ? d / (1 - Math.abs(2 * l - 1)) * 100 : 0, l * 100] };
-        const tint = (x, l) => { const [h, s] = hsl(x); return h2x(h, Math.min(Math.max(s, 45), 95), l) };
+        const tint = (x, l) => { if (GREY) return h2x(0, 0, l); const [h, s] = hsl(x); return h2x(h, Math.min(Math.max(s, 45), 95), l) };
         const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
         function applyTheme(name) {
-            const root = document.documentElement.style, vars = ['--bg', '--line', '--tint', '--ink', '--mut', '--pri', '--pink', '--priD', '--aside', '--g1', '--g2', '--navtxt', '--foot', '--av1', '--av2', '--b1', '--b2', '--ink2', '--shadow', '--graph', '--rowb', '--soft', '--soft2', '--itembg', '--itemb', '--dropb', '--dropbg', '--grid2'];
-            THEME_ON = name !== 'Violet Pink';
+            const root = document.documentElement.style, vars = ['--bg', '--line', '--tint', '--ink', '--mut', '--pri', '--pink', '--priD', '--aside', '--g1', '--g2', '--navtxt', '--foot', '--av1', '--av2', '--b1', '--b2', '--ink2', '--shadow', '--logof', '--sb1', '--sb2', '--graph', '--rowb', '--soft', '--soft2', '--itembg', '--itemb', '--dropb', '--dropbg', '--grid2'];
+            THEME_ON = name !== 'Violet Pink'; GREY = false; document.body.classList.toggle('th', THEME_ON);
             if (!THEME_ON) { vars.forEach(v => root.removeProperty(v)); try { localStorage.removeItem('if_theme') } catch { } setBar(); return }
-            const [h1, s1, l1] = hsl(PAL[0]), [h2, s2, l2] = hsl(PAL[1] || PAL[0]), S1 = clamp(s1, 35, 90), S2 = clamp(s2, 35, 90), L1 = clamp(l1, 28, 46), L2 = clamp(l2, 34, 58);
-            const pri = h2x(h1, S1, L1), acc = h2x(h2, S2, L2), rgb = pri.slice(1).match(/../g).map(v => parseInt(v, 16)).join(',');
+            const [h1, s1, l1] = hsl(PAL[0]), [h2, s2, l2] = hsl(PAL[1] || PAL[0]), grey = s1 < 12, H = (h, s, l) => h2x(h, grey ? 0 : s, l), S1 = clamp(s1, 35, 90), S2 = clamp(s2, 35, 90), L1 = clamp(l1, 28, 46), L2 = clamp(l2, 34, 58);
+            GREY = grey; const pri = H(h1, S1, L1), acc = H(h2, S2, L2), rgb = pri.slice(1).match(/../g).map(v => parseInt(v, 16)).join(',');
             Object.entries({
-                '--pri': pri, '--pink': acc, '--priD': h2x(h1, S1, Math.max(L1 - 8, 18)), '--bg': h2x(h1, 60, 97.5), '--line': h2x(h1, 45, 92.5), '--tint': h2x(h1, 70, 95.5), '--ink': h2x(h1, 55, 20), '--ink2': h2x(h1, 30, 34), '--mut': h2x(h1, 22, 52),
-                '--aside': h2x(h1, 60, 96.5), '--g1': h2x(h2, 80, 93), '--g2': h2x(h1, 75, 94), '--navtxt': h2x(h2, S2, Math.min(L2, 40)), '--foot': h2x(h1, 25, 70), '--av1': h2x(h2, 85, 78), '--av2': h2x(h1, 90, 76),
-                '--b1': h2x(h1, 75, 95), '--b2': h2x(h2, 85, 94.5), '--shadow': `rgba(${rgb},.08)`, '--graph': h2x(h1, 70, 98.5), '--rowb': h2x(h1, 45, 95), '--soft': h2x(h1, 55, 96.5), '--soft2': h2x(h1, 50, 93.5),
-                '--itembg': h2x(h2, 100, 97.5), '--itemb': h2x(h2, 70, 92), '--dropb': h2x(h1, 60, 81), '--dropbg': h2x(h1, 100, 98.7), '--grid2': h2x(h1, 40, 89)
+                '--pri': pri, '--pink': acc, '--priD': H(h1, S1, Math.max(L1 - 8, 18)), '--bg': H(h1, 80, 91.5), '--line': H(h1, 50, 86.5), '--tint': H(h1, 75, 91.5), '--logof': grey ? 'grayscale(1)' : `hue-rotate(${Math.round(h1 - 263)}deg)`, '--sb1': H(h1, 62, 24), '--sb2': H(h2, 55, 15), '--ink': H(h1, 55, 20), '--ink2': H(h1, 30, 34), '--mut': H(h1, 22, 52),
+                '--aside': H(h1, 70, 92.5), '--g1': H(h2, 85, 88), '--g2': H(h1, 80, 89), '--navtxt': H(h2, S2, Math.min(L2, 40)), '--foot': H(h1, 25, 70), '--av1': H(h2, 85, 78), '--av2': H(h1, 90, 76),
+                '--b1': H(h1, 80, 89), '--b2': H(h2, 85, 91), '--shadow': `rgba(${rgb},.08)`, '--graph': H(h1, 70, 97), '--rowb': H(h1, 45, 92.5), '--soft': H(h1, 60, 93.5), '--soft2': H(h1, 55, 90),
+                '--itembg': H(h2, 100, 94.5), '--itemb': H(h2, 70, 87), '--dropb': H(h1, 60, 81), '--dropbg': H(h1, 100, 98.7), '--grid2': H(h1, 40, 84)
             }).forEach(([k, v]) => root.setProperty(k, v));
             try { const t = {}; vars.forEach(v => { const x = root.getPropertyValue(v); if (x) t[v] = x }); localStorage.setItem('if_theme', JSON.stringify(t)) } catch { }  // lets the sign-in page match
             setBar();
@@ -1229,9 +1292,25 @@
             $('#chat').innerHTML = swap($('#chat').innerHTML)
         }
 
-        $('#pal').innerHTML = Object.keys(PALS).map(k => `<option>${k}</option>`).join(''); $('#pal').onchange = e => { const old = PAL; PAL = PALS[e.target.value]; remapPal(old, PAL); applyTheme(e.target.value); try { localStorage.setItem('if_pal', e.target.value) } catch { } fillDash(); fillOther() };
-        $('#cc').oninput = e => { const old = PAL; PALS['Custom'] = custom(e.target.value); PAL = PALS['Custom']; remapPal(old, PAL); $('#pal').value = 'Custom'; applyTheme('Custom'); try { localStorage.setItem('if_pal', 'Custom'); localStorage.setItem('if_cc', e.target.value) } catch { } fillDash(); fillOther() };
-        try { const sp = localStorage.getItem('if_pal'), sc = localStorage.getItem('if_cc'); if (sp && PALS[sp]) { if (sp === 'Custom' && sc) { PALS.Custom = custom(sc); $('#cc').value = sc } PAL = PALS[sp]; $('#pal').value = sp; applyTheme(sp) } } catch { }
+        $('#pal').innerHTML = Object.keys(PALS).map(k => `<option>${k}</option>`).join(''); $('#pal').onchange = e => {
+            const name = e.target.value, old = palFrom || PAL; palFrom = null; clearTimeout(palTimer);
+            if (name === 'Custom') { $('#cc').value = lastCustom; PALS.Custom = custom(lastCustom) }  // back to your last custom colour
+            PAL = PALS[name]; if (name !== 'Custom') $('#cc').value = PAL[0].toUpperCase();
+            remapPal(old, PAL); applyTheme(name);
+            try { localStorage.setItem('if_pal', name) } catch { }
+            fillDash(); fillOther();
+            if (name === 'Custom') { try { $('#cc').showPicker() } catch { } }  // choosing "Custom" opens the colour picker
+        };
+        /* custom colour: the interface recolours instantly; the heavier chart redraw waits until the picker stops moving */
+        let palTimer = null, palFrom = null, lastCustom = (() => { try { return localStorage.getItem('if_cc') || '#7C3AED' } catch { return '#7C3AED' } })();
+        const setCustom = hex => {
+            if (!/^#[0-9a-f]{6}$/i.test(hex)) return;
+            lastCustom = hex; palFrom = palFrom || PAL; PALS['Custom'] = custom(hex); PAL = PALS['Custom']; $('#pal').value = 'Custom'; applyTheme('Custom');
+            try { localStorage.setItem('if_pal', 'Custom'); localStorage.setItem('if_cc', hex) } catch { }
+            clearTimeout(palTimer); palTimer = setTimeout(() => { remapPal(palFrom, PAL); palFrom = null; fillDash(); fillOther() }, 120)
+        };
+        ['input', 'change'].forEach(ev => $('#cc').addEventListener(ev, e => setCustom(e.target.value)));
+        try { const sp = localStorage.getItem('if_pal'), sc = localStorage.getItem('if_cc'); if (sp && PALS[sp]) { if (sp === 'Custom' && sc) { PALS.Custom = custom(sc); $('#cc').value = sc } PAL = PALS[sp]; $('#pal').value = sp; if (sp !== 'Custom') $('#cc').value = PAL[0].toUpperCase(); applyTheme(sp) } } catch { }
         go('dash'); sample();
         /* ---- account: who is logged in, log out, session expiry ---- */
         const toLogin = () => { location.href = '/login' };
