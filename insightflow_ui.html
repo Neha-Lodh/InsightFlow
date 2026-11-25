@@ -9,14 +9,30 @@
         rel="stylesheet">
     <style>
         :root {
-            --bg: #FBF6FC;
+            --bg: #F3EAFB;
             --card: #fff;
-            --line: #EDE0F3;
+            --line: #D9C5EE;
             --ink: #22145C;
-            --mut: #7A6C9E;
+            --mut: #5F4E90;
             --pri: #7C3AED;
             --pink: #EC4899;
-            --tint: #F5EDFD;
+            --tint: #EADBFA;
+            --aside: #EDE0F9;
+            --g1: #F9C4E0;
+            --g2: #DFCBFA;
+            --foot: #8A78B6;
+            --b1: #E4D0FA;
+            --b2: #F8C9E2;
+            --soft: #ECE0F8;
+            --soft2: #DECCF4;
+            --graph: #F5ECFC;
+            --rowb: #E6D9F2;
+            --itembg: #FFE8EF;
+            --itemb: #F3C2D1;
+            --dropb: #B398E4;
+            --dropbg: #F4EAFF;
+            --grid2: #CBB8E6;
+            --shadow: rgba(124, 58, 237, .14);
             box-sizing: border-box;
             padding-top: env(safe-area-inset-top, 0px);
             padding-bottom: env(safe-area-inset-bottom, 0px)
@@ -1195,8 +1211,8 @@
         function fillDash() {
             const rs = R(), o = outl(rs), N = cols('numeric'), C = cols('categorical'), Dt = cols('date'), opts = [...C, ...Dt];
             $('#bn').textContent = `Welcome back, ${USER}!`; $('#bs').textContent = `${D.name} is ready. Explore, ask questions and discover insights from your data.`;
-            const kp = [['📄', 'Total Rows', rs.length.toLocaleString(), `${D.n.toLocaleString()} before cleaning`, '#FFF1F8', '#FBD5E8'], ['🧬', 'Columns', D.cols.length, ['numeric', 'categorical', 'date'].map(r => cols(r).length + ' ' + r).join(', '), '#F8F1FF', '#E4D5FA'], ['🔗', 'Missing Values', Object.values(D.miss).reduce((a, b) => a + b, 0), 'handled during cleaning', '#FFF1F5', '#FAD3DD'], ['⚠️', 'Duplicate Rows', D.dup, 'removed during cleaning', '#FFF6EE', '#FCDDC3'], ['🛡️', 'Outliers', Object.values(o).reduce((a, b) => a + b, 0), 'IQR rule, current view', '#F1F5FF', '#D4E0FA']];
-            $('#stats').innerHTML = kp.map((s, k) => `<div class="stat" style="--t:${THEME_ON ? tint(PAL[k % PAL.length], 96) : s[4]};--i:${THEME_ON ? tint(PAL[k % PAL.length], 88) : s[5]}"><div class="ic">${s[0]}</div><div class="l">${s[1]}</div><div class="v">${s[2]}</div><div class="up" style="color:var(--pri)">${esc(s[3])}</div></div>`).join('');
+            const kp = [['📄', 'Total Rows', rs.length.toLocaleString(), `${D.n.toLocaleString()} before cleaning`, '#FFE0EF', '#F8B8D8'], ['🧬', 'Columns', D.cols.length, ['numeric', 'categorical', 'date'].map(r => cols(r).length + ' ' + r).join(', '), '#EFE0FF', '#D2B8F5'], ['🔗', 'Missing Values', Object.values(D.miss).reduce((a, b) => a + b, 0), 'handled during cleaning', '#FFE0E8', '#F6B5C6'], ['⚠️', 'Duplicate Rows', D.dup, 'removed during cleaning', '#FFEAD6', '#F9C79A'], ['🛡️', 'Outliers', Object.values(o).reduce((a, b) => a + b, 0), 'IQR rule, current view', '#E0EAFF', '#B5CBF5']];
+            $('#stats').innerHTML = kp.map((s, k) => `<div class="stat" style="--t:${THEME_ON ? tint(PAL[k % PAL.length], 90) : s[4]};--i:${THEME_ON ? tint(PAL[k % PAL.length], 80) : s[5]}"><div class="ic">${s[0]}</div><div class="l">${s[1]}</div><div class="v">${s[2]}</div><div class="up" style="color:var(--pri)">${esc(s[3])}</div></div>`).join('');
             const m = N.includes(ES.m) ? ES.m : MM(N) || '(row count)', g = opts.includes(ES.g) ? ES.g : opts[0], ag = ES.agg || 'sum', isD = Dt.includes(g), ch = ES.ch || (isD ? 'Line' : 'Bar'); let d = [], tx = '';
             if (g) { d = grp(rs, r => isD ? (r[g] != null ? gk(r[g], AGc(g)) : null) : r[g], N.includes(m) ? m : null, ag); d = isD ? d.sort((a, b) => a[0] < b[0] ? -1 : 1) : d.sort((a, b) => b[1] - a[1]).slice(0, 12); if (d.length) { const t = d.reduce((s, x) => s + x[1], 0), tp = d.reduce((a, b) => b[1] > a[1] ? b : a); tx = `${tp[0]} is highest at ${fmt(tp[1])}` + (ag == 'sum' && t > 0 ? ` (${(tp[1] / t * 100).toFixed(1)}% of the shown total).` : '.') } }
             $('#ex').innerHTML = `<h2>Dashboard Explorer</h2><p class="sub">Choose what to measure and how to break it down.</p><div class="sel"><label>Measure${sel('m', N.length ? N : ['(row count)'], m)}</label><label>Break down by${sel('g', opts.length ? opts : ['(none)'], g)}</label><label>Aggregation${sel('agg', ['sum', 'mean', 'count'], ag)}</label><label>Chart${sel('ch', Object.keys(CT), ch)}</label></div><div class="graph" style="background:#fff">${g ? chart(CT[ch] || 'bar', d) : '<p class="sub" style="padding:14px">No category or date column to break down by.</p>'}</div>${tx ? `<div class="item" style="background:var(--soft,#F6F0FF);border-color:var(--line);margin-top:10px">💡 ${esc(tx)}</div>` : ''}`;
@@ -1207,7 +1223,7 @@
             $('#det1').innerHTML = `<select data-s="col" style="width:100%;margin-bottom:10px">${cs.map(c => `<option${c == col ? ' selected' : ''}>${esc(c)}</option>`).join('')}</select>` + [
                 `<div style="display:flex;gap:12px;align-items:center"><div class="ic" style="background:var(--soft2,#EDE4FD);width:46px;height:46px">${RI[role]}</div><div><h2>${esc(col)}</h2><span class="badge pr">${role}</span></div></div><div class="row"><span>Completeness</span><b>${comp.toFixed(1)}%</b></div><div class="bar"><i style="width:${comp}%"></i></div><div class="row"><span>Unique values</span><b>${new Set(v).size.toLocaleString()}</b></div><div class="row"><span>Missing (raw)</span><b>${D.miss[col]}</b></div><p class="sub" style="margin-top:10px">Top values</p>` + tv.map(x => `<div class="rel"><span>${fx(x[0])}</span><b>${x[1]}</b></div>`).join('') + `<button class="btn" style="width:100%;margin-top:14px" data-go="explorer">View Full Details →</button>`,
                 st.map(x => `<div class="row"><span>${x[0]}</span><b>${x[1]}</b></div>`).join(''), insights(rs).slice(0, 5).map(x => `<div class="rel">${esc(x)}</div>`).join('')][tab];
-            $('#rq').innerHTML = HIST.slice(-4).reverse().map(h => `<div class="item" style="background:#F7F2FC;border-color:var(--line)"><b>${esc(h.q)}</b><small>${esc(h.text.slice(0, 80))}</small></div>`).join('') || '<p class="sub">No questions yet. Open “Ask a Question”.</p>';
+            $('#rq').innerHTML = HIST.slice(-4).reverse().map(h => `<div class="item" style="background:var(--soft);border-color:var(--line)"><b>${esc(h.q)}</b><small>${esc(h.text.slice(0, 80))}</small></div>`).join('') || '<p class="sub">No questions yet. Open “Ask a Question”.</p>';
             $('#an').innerHTML = anomalies().slice(0, 3).map(a => `<div class="item"><b>${esc(a[0])}</b> <span class="badge ${a[2]}">${a[2]}</span><small>${esc(a[1])}</small></div>`).join('') || '<p class="sub">No anomalies detected.</p>';
             $('#ac').innerHTML = LOG.slice(0, 5).map(x => `<div><span class="ic" style="background:var(--soft2,#F1E9FB)">${/date/.test(x) ? '🗓️' : /Removed/.test(x) ? '🧹' : '🩹'}</span><span>${esc(x)}</span><small>on upload</small></div>`).join(''); fillGal(rs)
         }
@@ -1268,10 +1284,10 @@
             const [h1, s1, l1] = hsl(PAL[0]), [h2, s2, l2] = hsl(PAL[1] || PAL[0]), S1 = clamp(s1, 35, 90), S2 = clamp(s2, 35, 90), L1 = clamp(l1, 28, 46), L2 = clamp(l2, 34, 58);
             const pri = h2x(h1, S1, L1), acc = h2x(h2, S2, L2), rgb = pri.slice(1).match(/../g).map(v => parseInt(v, 16)).join(',');
             Object.entries({
-                '--pri': pri, '--pink': acc, '--priD': h2x(h1, S1, Math.max(L1 - 8, 18)), '--bg': h2x(h1, 60, 97.5), '--line': h2x(h1, 45, 92.5), '--tint': h2x(h1, 70, 95.5), '--ink': h2x(h1, 55, 20), '--ink2': h2x(h1, 30, 34), '--mut': h2x(h1, 22, 52),
-                '--aside': h2x(h1, 60, 96.5), '--g1': h2x(h2, 80, 93), '--g2': h2x(h1, 75, 94), '--navtxt': h2x(h2, S2, Math.min(L2, 40)), '--foot': h2x(h1, 25, 70), '--av1': h2x(h2, 85, 78), '--av2': h2x(h1, 90, 76),
-                '--b1': h2x(h1, 75, 95), '--b2': h2x(h2, 85, 94.5), '--shadow': `rgba(${rgb},.08)`, '--graph': h2x(h1, 70, 98.5), '--rowb': h2x(h1, 45, 95), '--soft': h2x(h1, 55, 96.5), '--soft2': h2x(h1, 50, 93.5),
-                '--itembg': h2x(h2, 100, 97.5), '--itemb': h2x(h2, 70, 92), '--dropb': h2x(h1, 60, 81), '--dropbg': h2x(h1, 100, 98.7), '--grid2': h2x(h1, 40, 89)
+                '--pri': pri, '--pink': acc, '--priD': h2x(h1, S1, Math.max(L1 - 8, 18)), '--bg': h2x(h1, 60, 94), '--line': h2x(h1, 45, 85), '--tint': h2x(h1, 70, 90.5), '--ink': h2x(h1, 55, 20), '--ink2': h2x(h1, 30, 28), '--mut': h2x(h1, 25, 40),
+                '--aside': h2x(h1, 60, 92.5), '--g1': h2x(h2, 80, 84), '--g2': h2x(h1, 75, 86), '--navtxt': h2x(h2, S2, Math.min(L2, 40)), '--foot': h2x(h1, 28, 55), '--av1': h2x(h2, 85, 78), '--av2': h2x(h1, 90, 76),
+                '--b1': h2x(h1, 75, 87), '--b2': h2x(h2, 85, 85), '--shadow': `rgba(${rgb},.14)`, '--graph': h2x(h1, 70, 96), '--rowb': h2x(h1, 45, 89), '--soft': h2x(h1, 55, 91.5), '--soft2': h2x(h1, 50, 86),
+                '--itembg': h2x(h2, 100, 94), '--itemb': h2x(h2, 70, 85), '--dropb': h2x(h1, 60, 70), '--dropbg': h2x(h1, 100, 95), '--grid2': h2x(h1, 40, 80)
             }).forEach(([k, v]) => root.setProperty(k, v));
         }
 
@@ -1400,7 +1416,7 @@
             const r = fcCompute(S);
             if (!r.ok) { box.innerHTML = ctl + `<div class="card"><h2>Not enough history</h2><p class="sub">${esc(r.msg)}</p></div>`; return }
             const what = { sum: 'Total', mean: 'Average', count: 'Number of' }[agg] + ' ' + (meas || 'records') + ' per month', prev = r.y[r.y.length - 1];
-            const tn = i => THEME_ON ? tint(PAL[i % PAL.length], 96) : ['#FFF1F8', '#F8F1FF', '#FFF6EE', '#F1F5FF'][i], ti = i => THEME_ON ? tint(PAL[i % PAL.length], 88) : ['#FBD5E8', '#E4D5FA', '#FCDDC3', '#D4E0FA'][i];
+            const tn = i => THEME_ON ? tint(PAL[i % PAL.length], 90) : ['#FFE0EF', '#EFE0FF', '#FFEAD6', '#E0EAFF'][i], ti = i => THEME_ON ? tint(PAL[i % PAL.length], 80) : ['#F8B8D8', '#D2B8F5', '#F9C79A', '#B5CBF5'][i];
             const card = (i, ic, l, v, sm) => `<div class="stat" style="--t:${tn(i)};--i:${ti(i)}"><div class="ic">${ic}</div><div class="l">${l}</div><div class="v">${v}</div>${sm}</div>`;
             const tot = agg == 'mean' ? avg(r.fc.map(f => f.v)) : r.fc.reduce((s, f) => s + f.v, 0), ch = r.pct == null ? '' : `<div>${fcPct(r.pct, ' vs last 3 months')}</div>`;
             const cards = r.fc.map((f, i) => card(i, '🔮', esc(fcLab(f.k)), fmt(f.v), `<small>80% range: ${fmt(f.lo)} to ${fmt(f.hi)}</small>`)).join('') + card(3, r.pct == null || Math.abs(r.pct) < 3 ? '📊' : r.pct > 0 ? '📈' : '📉', agg == 'mean' ? 'Next 3 months average' : 'Next 3 months total', fmt(tot), ch);
