@@ -1725,6 +1725,202 @@
             { const prevFO = fillOther; fillOther = function () { prevFO(); fdRender() } }
         })();
     </script>
+    <!-- ===================================================================
+     INSIGHTFLOW "GENERATE POWERPOINT" ADD-ON
+     Paste this whole block into insightflow_ui.html, right BEFORE the closing </body> tag.
+     It adds a new "PowerPoint" page and changes nothing else. It is self-contained and works
+     with or without the other add-ons. The first time you click Generate it loads the free
+     PptxGenJS library from the internet (jsDelivr, with a cdnjs fallback).
+     =================================================================== -->
+    <script>
+        (function () {
+            const nb = document.createElement('button');
+            nb.dataset.go = 'pptgen'; nb.textContent = '📊 PowerPoint';
+            const rp = document.querySelector('#nav button[data-go="reports"]');
+            rp ? rp.after(nb) : document.getElementById('nav').appendChild(nb);
+            const sec = document.createElement('section');
+            sec.className = 'page'; sec.id = 'p-pptgen';
+            sec.innerHTML = '<h1>Generate PowerPoint</h1><p class="sub">Turns your data into a ready-to-present, editable PowerPoint: overview, insights, charts, forecast, data quality and conclusions. Uses the current Data Explorer filters.</p><div class="card" style="margin-bottom:16px;display:flex;gap:14px;align-items:center;flex-wrap:wrap"><label style="display:flex;gap:8px;align-items:center;font-weight:600">Theme<select data-pgtheme></select></label><button class="btn" data-pg="gen">⬇ Generate PowerPoint</button></div><div id="pg"></div>';
+            (document.getElementById('p-reports') || document.getElementById('p-query')).after(sec);
+
+            /* forecast helpers (copied so this add-on works on its own) */
+            const FC = { m: null, t: null, agg: 'sum' }, MONS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'], FC_PHI = .9;
+            const fcLab = k => MONS[+k.slice(5, 7) - 1] + ' ' + k.slice(0, 4), fcShort = k => MONS[+k.slice(5, 7) - 1] + " '" + k.slice(2, 4);
+            const fcIdx = k => +k.slice(0, 4) * 12 + (+k.slice(5, 7) - 1), fcKey = i => Math.floor(i / 12) + '-' + String(i % 12 + 1).padStart(2, '0');
+            const fcDim = k => new Date(Date.UTC(+k.slice(0, 4), +k.slice(5, 7), 0)).getUTCDate();
+
+            // rows -> one value per calendar month (gaps filled, incomplete first/last month detected)
+            function fcSeries(rs, dc, meas, agg) {
+                const M = new Map();
+                rs.forEach(r => {
+                    const t = r[dc]; if (t == null) return; let v = 1;
+                    if (meas) { v = r[meas]; if (v == null || v === '' || isNaN(v)) return; v = +v }
+                    const k = mo(t), d = new Date(t).getUTCDate(), e = M.get(k) || { s: 0, c: 0, a: 99, z: 0 };
+                    e.s += v; e.c++; e.a = Math.min(e.a, d); e.z = Math.max(e.z, d); M.set(k, e)
+                });
+                if (!M.size) return null;
+                const ix = [...M.keys()].map(fcIdx); let lo = Infinity, hi = -Infinity; ix.forEach(i => { if (i < lo) lo = i; if (i > hi) hi = i });
+                const keys = [], y = [], info = [];
+                for (let i = lo; i <= hi; i++) { const k = fcKey(i), e = M.get(k); keys.push(k); info.push(e || null); y.push(e ? (agg == 'mean' ? e.s / e.c : e.s) : null) }
+                for (let i = 0; i < y.length; i++) if (y[i] == null) { let p = i - 1, q = i + 1; while (y[q] == null) q++; y[i] = y[p] + (y[q] - y[p]) * (i - p) / (q - p) }
+                const notes = []; let a = 0, z = keys.length;
+                if (agg != 'mean' && z - a > 4) {   // totals and counts are misleading for a month that is only partly covered
+                    const L = info[z - 1], F = info[a];
+                    if (L && L.z / fcDim(keys[z - 1]) < .8) { notes.push(`${fcLab(keys[z - 1])} only has data up to day ${L.z}, so it is treated as incomplete and is forecast as a full month.`); z-- }
+                    if (F && z - a > 4 && (fcDim(keys[a]) - F.a + 1) / fcDim(keys[a]) < .8) { notes.push(`${fcLab(keys[a])} starts on day ${F.a}, so it was left out when fitting.`); a++ }
+                }
+                const filled = info.slice(a, z).filter(x => !x).length;
+                if (filled) notes.push(`${filled} month(s) without any rows were filled in by interpolation.`);
+                return { keys: keys.slice(a, z), y: y.slice(a, z), notes }
+            }
+
+            // ---- the candidate models ----
+            function fcOLS(y) { const n = y.length; let sx = 0, sy = 0, sxx = 0, sxy = 0; y.forEach((v, i) => { sx += i; sy += v; sxx += i * i; sxy += i * v }); const d = n * sxx - sx * sx || 1, b = (n * sxy - sx * sy) / d; return { a: (sy - b * sx) / n, b } }
+            const FC_MODELS = [
+                {
+                    name: 'Linear trend', min: 3, desc: 'a straight line fitted through all the months',
+                    fit: y => { const { a, b } = fcOLS(y); return { res: y.map((v, i) => v - (a + b * i)), f: h => Array.from({ length: h }, (_, i) => a + b * (y.length + i)) } }
+                },
+                {
+                    name: 'Damped trend (Holt)', min: 4, desc: 'follows the recent level and slope, with the slope flattening over time',
+                    fit: y => {
+                        let best = null;
+                        [.2, .4, .6, .8].forEach(al => [.1, .3, .5].forEach(be => {
+                            let l = y[0], b = y[1] - y[0], sse = 0; const res = [];
+                            for (let i = 1; i < y.length; i++) { const p = l + FC_PHI * b, e = y[i] - p; res.push(e); sse += e * e; const ln = al * y[i] + (1 - al) * p; b = be * (ln - l) + (1 - be) * FC_PHI * b; l = ln }
+                            if (!best || sse < best.sse) best = { l, b, sse, res }
+                        }));
+                        return { res: best.res, f: h => { let s = 0; return Array.from({ length: h }, (_, i) => { s += Math.pow(FC_PHI, i + 1); return best.l + s * best.b }) } }
+                    }
+                },
+                {
+                    name: 'Recent average', min: 3, desc: 'the average of the last 3 months, with no trend',
+                    fit: y => { const w = 3, m = avg(y.slice(-w)); return { res: y.slice(1).map((v, i) => v - avg(y.slice(Math.max(0, i + 1 - w), i + 1))), f: h => Array(h).fill(m) } }
+                },
+                {
+                    name: 'Trend + seasonality', min: 24, desc: 'a straight line plus a typical pattern for each calendar month',
+                    fit: (y, ks) => {
+                        const { a, b } = fcOLS(y), r = y.map((v, i) => v - (a + b * i)), S = Array(12).fill(0), C = Array(12).fill(0);
+                        ks.forEach((k, i) => { const m = +k.slice(5, 7) - 1; S[m] += r[i]; C[m]++ });
+                        const mean = S.reduce((s, v, m) => s + v / (C[m] || 1), 0) / 12, sea = S.map((v, m) => v / (C[m] || 1) - mean);
+                        return { res: y.map((v, i) => r[i] - sea[+ks[i].slice(5, 7) - 1]), f: (h, fk) => Array.from({ length: h }, (_, i) => a + b * (y.length + i) + sea[+fk[i].slice(5, 7) - 1]) }
+                    }
+                }
+            ];
+
+            // test every model on the last 3 known months, keep the best, predict the next 3 months
+            function fcCompute(S) {
+                const y = S.y, n = y.length, H = 3;
+                if (n < 4) return { ok: false, msg: `Only ${n} month${n == 1 ? '' : 's'} of data found. A forecast needs at least 4 months of history.` };
+                const fk = Array.from({ length: H }, (_, i) => fcKey(fcIdx(S.keys[n - 1]) + 1 + i)), notes = [...S.notes];
+                let cmp = [], pick = FC_MODELS[0], hold = 0;
+                if (n >= 9) {
+                    const tr = y.slice(0, n - H), te = y.slice(n - H), tk = S.keys.slice(0, n - H), tf = S.keys.slice(n - H), lvl = Math.abs(avg(te)) || 1;
+                    cmp = FC_MODELS.filter(m => tr.length >= m.min).map(m => { const p = m.fit(tr, tk).f(H, tf), mae = avg(p.map((v, i) => Math.abs(v - te[i]))); return { m, mae, pct: mae / lvl * 100, rmse: Math.sqrt(avg(p.map((v, i) => (v - te[i]) ** 2))) } });
+                    const b = cmp.reduce((x, z) => z.mae < x.mae ? z : x); pick = b.m; hold = b.rmse; b.best = true
+                } else notes.push(`Only ${n} months of history, so the models could not be tested against known months. A linear trend is used; treat this as a rough indication.`);
+                const fit = pick.fit(y, S.keys), p = fit.f(H, fk), df = Math.max(1, fit.res.length - 2), sg = Math.max(Math.sqrt(fit.res.reduce((s, v) => s + v * v, 0) / df), hold), nonneg = y.every(v => v >= 0);
+                const fc = p.map((v, i) => { const w = 1.28 * sg * Math.sqrt(1 + .5 * i); let vv = v, lo = v - w, hi = v + w; if (nonneg) { vv = Math.max(0, v); lo = Math.max(0, lo); hi = Math.max(vv, hi) } return { k: fk[i], v: vv, lo, hi } });
+                const l3 = y.slice(-H), pct = avg(l3) ? (avg(fc.map(f => f.v)) - avg(l3)) / Math.abs(avg(l3)) * 100 : null;
+                return { ok: true, keys: S.keys, y, fc, pick, cmp, notes, pct }
+            }
+
+
+            /* ===== POWERPOINT GENERATOR: builds an editable .pptx (native charts) from the current data ===== */
+            const PS = { theme: 'slate', busy: false, msg: '' };
+            const PT = {
+                slate: { n: 'Slate Navy', bg: 'F2F4FB', panel: 'FFFFFF', line: 'DDE1F0', ink: '1E2547', mut: '5B6384', head: '1E2A5A', acc: ['4CB38C', '6B7BE0', 'D9485F', 'F2B84B', 'E57A3C', '3E9BA8', '8E6BD8', '5AA2F0'] },
+                teal: { n: 'Clean Teal', bg: 'EEF5F3', panel: 'FFFFFF', line: 'D9E8E4', ink: '10343A', mut: '587C80', head: '0F4F4C', acc: ['1F9D7A', 'E4574C', '14365D', '6CC7A6', 'F2A541', '3FA7A0', '0F5F5A', 'F08A7E'] },
+                violet: { n: 'Violet Pink (InsightFlow)', bg: 'F3EAFB', panel: 'FFFFFF', line: 'D9C5EE', ink: '22145C', mut: '5F4E90', head: '4C1D95', acc: ['7C3AED', 'EC4899', '38BDF8', '34D399', 'F59E0B', '818CF8', 'FB7185', 'A78BFA'] },
+                ocean: { n: 'Ocean Blue', bg: 'EAF3FC', panel: 'FFFFFF', line: 'D3E3F5', ink: '0B2A4A', mut: '52708F', head: '0B3D91', acc: ['1E88E5', '00ACC1', '3949AB', '26C6DA', 'FFB300', '43A047', '8E24AA', 'F4511E'] },
+                sunset: { n: 'Sunset Glow', bg: 'FFF3EC', panel: 'FFFFFF', line: 'F5DACB', ink: '3B1A12', mut: '8A5A4A', head: 'B5301B', acc: ['FF6B35', 'F7B801', 'D7263D', '8E2C6B', '2E86AB', 'F18F01', 'C73E1D', '6A4C93'] },
+                forest: { n: 'Forest Green', bg: 'EBF4EA', panel: 'FFFFFF', line: 'D5E6D3', ink: '123221', mut: '587561', head: '14532D', acc: ['2E7D32', '8BC34A', 'F9A825', '00695C', '6D4C41', '7CB342', 'C0CA33', '388E3C'] },
+                neon: { n: 'Neon Dark', bg: '071433', panel: '0C2058', line: '1F4C99', ink: 'EAF6FF', mut: '8DB5E8', head: '02050F', acc: ['22E5F0', 'FFD43B', '7EC8FF', '8EF0A0', 'FF4D6D', 'B79CFF', '4FA3FF', 'FF9F43'], dark: 1 },
+                midnight: { n: 'Midnight Violet (dark)', bg: '1A1033', panel: '241848', line: '3B2A6B', ink: 'F3ECFF', mut: 'B7A6E8', head: '0B0618', acc: ['A78BFA', 'F472B6', '38BDF8', '34D399', 'FBBF24', 'FB7185', '818CF8', '2DD4BF'], dark: 1 }
+            };
+            const pgMix = (a, b, k) => { const p = h => [0, 2, 4].map(i => parseInt(h.slice(i, i + 2), 16)), A = p(a), B = p(b); return A.map((v, i) => Math.round(v + (B[i] - v) * k).toString(16).padStart(2, '0')).join('').toUpperCase() };
+            const pgCut = (s, n) => { s = String(s); return s.length > n ? s.slice(0, n - 1) + '…' : s };
+            const pgPct = c => (c >= 0 ? '+' : '') + c.toFixed(1) + '%';
+            function pgLoad() {
+                if (window.PptxGenJS) return Promise.resolve();
+                const urls = ['https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js', 'https://cdnjs.cloudflare.com/ajax/libs/pptxgenjs/3.12.0/pptxgen.bundle.js'];
+                const t = i => new Promise((ok, no) => { if (i >= urls.length) return no(new Error('Could not load the PowerPoint library. Check your internet connection and try again.')); const s = document.createElement('script'); s.src = urls[i]; s.onload = () => window.PptxGenJS ? ok() : t(i + 1).then(ok, no); s.onerror = () => t(i + 1).then(ok, no); document.head.appendChild(s) });
+                return t(0)
+            }
+            /* --- analyse the data once, then describe every slide --- */
+            function pgPlan() {
+                const rs = R(), T = PT[PS.theme], N = cols('numeric'), C = cols('categorical'), Dt = cols('date'), m = MM(N) || null, lb = m || 'Count', ag = m ? 'sum' : 'count';
+                const top = (c, k) => grp(rs, r => r[c], m, ag).sort((a, b) => b[1] - a[1]).slice(0, k), ser = (meas, agg) => { try { return Dt[0] ? fcSeries(rs, Dt[0], meas, agg) : null } catch (e) { return null } };
+                const sC = ser(null, 'count'), sS = m ? ser(m, 'sum') : null, sr = sS || sC, tr = sr && sr.y.length > 1 ? sr : null, dl = S => S && S.y.length > 1 && S.y[S.y.length - 2] ? (S.y[S.y.length - 1] - S.y[S.y.length - 2]) / Math.abs(S.y[S.y.length - 2]) * 100 : null;
+                const o = outl(rs), oc = Object.values(o).reduce((a, b) => a + b, 0), ms = Object.values(D.miss).reduce((a, b) => a + b, 0), n0 = D.n || rs.length, cells = n0 * D.cols.length, nv = N.reduce((s, c) => s + vals(rs, c).length, 0);
+                const comp = cells ? 100 * (1 - ms / cells) : 100, dupF = n0 ? 100 * (1 - D.dup / n0) : 100, outF = 100 * (1 - oc / Math.max(nv, 1)), score = Math.round((comp + dupF + outF) / 3);
+                const c0 = C[0] ? top(C[0], 60) : [], c0t = c0.reduce((s, a) => s + Math.max(a[1], 0), 0), share = c0.length && c0t ? 100 * c0[0][1] / c0t : null, c1 = C[1] ? top(C[1], 8) : c0.slice(0, 8), c1t = C[1] ? grp(rs, r => r[C[1]], m, ag).reduce((s, a) => s + Math.max(a[1], 0), 0) : c0t;
+                let fr = null; if (m && Dt[0]) { const S = sS, r = S && fcCompute(S); if (r && r.ok) fr = r }
+                const f3 = fr ? avg(fr.fc.map(f => f.v)) : null, l3 = fr ? avg(fr.y.slice(-3)) : null, fpct = fr && l3 ? (f3 - l3) / Math.abs(l3) * 100 : null;
+                const x = m ? vals(rs, m) : [], ins = insights(rs), title = D.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase()), today = new Date().toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' });
+                let bp = null; if (N.length > 1) for (let i = 0; i < N.length; i++)for (let j = i + 1; j < N.length; j++) { const r = pear(rs, N[i], N[j]); if (!bp || Math.abs(r) > Math.abs(bp[2])) bp = [N[i], N[j], r] }
+                const sum = [`This dataset has ${rs.length.toLocaleString()} rows and ${D.cols.length} columns, with a data health score of ${score}%.`];
+                if (share != null && c0[0]) sum.push(`${c0[0][0]} leads ${lb} by ${C[0]} with ${share.toFixed(1)}% of the total.`);
+                if (tr) { const dd = dl(tr); sum.push(`Monthly ${lb} moved from ${fmt(tr.y[0])} to ${fmt(tr.y[tr.y.length - 1])}${dd != null ? `; the latest month is ${pgPct(dd)} versus the previous month` : ''}.`) }
+                if (fr) sum.push(`The forecast expects ${fmt(fr.fc.reduce((s, f) => s + f.v, 0))} over the next three months (${pgPct(fpct)} versus the last three).`);
+                const P = [];
+                /* 1 title */
+                P.push({ t: 'Title', notes: `Introduce the analysis of ${title}.`, fn(s, p) { s.background = { color: T.head }; s.addShape(p.ShapeType.rect, { x: 0, y: 0, w: .35, h: 7.5, fill: { color: T.acc[0] }, line: { color: T.acc[0] } }); s.addText('DATA ANALYSIS REPORT', { x: .9, y: 1.9, w: 11, h: .5, fontSize: 16, bold: true, color: T.acc[1], charSpacing: 6, fontFace: 'Calibri' }); s.addText(title, { x: .9, y: 2.4, w: 11.5, h: 1.6, fontSize: 54, bold: true, color: 'FFFFFF', fontFace: 'Calibri', valign: 'top', fit: 'shrink' }); s.addText(`${rs.length.toLocaleString()} rows · ${D.cols.length} columns · ${today}`, { x: .9, y: 4.2, w: 11, h: .5, fontSize: 20, color: 'D9DDF2', fontFace: 'Calibri' }); T.acc.slice(0, 5).forEach((c, i) => s.addShape(p.ShapeType.ellipse, { x: .9 + i * .55, y: 5.2, w: .38, h: .38, fill: { color: c }, line: { color: c } })); s.addText('Created with InsightFlow', { x: .9, y: 6.7, w: 6, h: .4, fontSize: 14, color: 'B7BEE0', fontFace: 'Calibri' }) } });
+                /* 2 overview */
+                const K = [['Records', rs.length.toLocaleString(), `${D.cols.length} columns`]];
+                if (m) K.push([`Total ${m}`, fmt(x.reduce((a, b) => a + b, 0)), `${x.length.toLocaleString()} values`], [`Average ${m}`, fmt(avg(x)), `min ${fmt(mn1(x))} · max ${fmt(mx1(x))}`]);
+                if (c0[0]) K.push([`Top ${C[0]}`, pgCut(c0[0][0], 12), `${fmt(c0[0][1])} · ${share.toFixed(1)}% of total`]);
+                K.push(['Data health', score + '%', `${oc} outliers · ${D.dup} duplicates`]);
+                P.push({ t: 'Overview', notes: sum.join(' '), fn(s, p) { this.base(s, p, 'Overview'); const w = (12.3 - .2 * (K.length - 1)) / K.length; K.forEach((k, i) => { const xx = .5 + i * (w + .2); this.card(s, p, xx, 1.5, w, 1.7); s.addShape(p.ShapeType.rect, { x: xx, y: 1.75, w: .07, h: .9, fill: { color: T.acc[i % 8] }, line: { color: T.acc[i % 8] } }); s.addText(k[0], { x: xx + .25, y: 1.62, w: w - .3, h: .4, fontSize: 13, bold: true, color: T.mut, fontFace: 'Calibri' }); s.addText(String(k[1]), { x: xx + .25, y: 2.0, w: w - .3, h: .7, fontSize: String(k[1]).length > 9 ? 22 : 30, bold: true, color: T.ink, fontFace: 'Calibri', fit: 'shrink' }); s.addText(k[2], { x: xx + .25, y: 2.7, w: w - .3, h: .4, fontSize: 11, color: T.mut, fontFace: 'Calibri' }) }); this.card(s, p, .5, 3.5, 12.3, 3.2); s.addText('Executive summary', { x: .8, y: 3.65, w: 6, h: .5, fontSize: 18, bold: true, color: T.ink, fontFace: 'Calibri' }); s.addText(sum.map(t => ({ text: t, options: { bullet: { code: '25CF', color: T.acc[1] }, breakLine: true, paraSpaceAfter: 8 } })), { x: .8, y: 4.2, w: 11.7, h: 2.4, fontSize: 19, color: T.ink, fontFace: 'Calibri', valign: 'top' }) } });
+                /* 3 insights */
+                if (ins.length) P.push({ t: 'Key insights', notes: ins.slice(0, 4).join(' '), fn(s, p) { this.base(s, p, 'Key insights'); ins.slice(0, 4).forEach((t, i) => { const xx = .5 + (i % 2) * 6.25, yy = 1.5 + Math.floor(i / 2) * 2.55; this.card(s, p, xx, yy, 6.05, 2.3); s.addShape(p.ShapeType.ellipse, { x: xx + .3, y: yy + .35, w: .6, h: .6, fill: { color: T.acc[i % 8] }, line: { color: T.acc[i % 8] } }); s.addText(String(i + 1), { x: xx + .3, y: yy + .35, w: .6, h: .6, fontSize: 18, bold: true, color: 'FFFFFF', align: 'center', valign: 'middle', fontFace: 'Calibri' }); s.addText(t, { x: xx + 1.15, y: yy + .38, w: 4.7, h: 1.8, fontSize: 18, color: T.ink, fontFace: 'Calibri', valign: 'top', fit: 'shrink' }) }) } });
+                /* 4 trend */
+                if (tr) { const ys = tr.y, mxI = ys.indexOf(Math.max(...ys)), mnI = ys.indexOf(Math.min(...ys)), dd = dl(tr); P.push({ t: `${lb} trend`, notes: `Peak in ${fcLab(tr.keys[mxI])}, lowest in ${fcLab(tr.keys[mnI])}.`, fn(s, p) { this.base(s, p, `${lb} by month`); this.card(s, p, .5, 1.45, 8.5, 5.3); s.addChart(p.charts.LINE, [{ name: lb, labels: tr.keys.map(fcShort), values: ys }], this.ch({ x: .7, y: 1.6, w: 8.1, h: 5.0, chartColors: [T.acc[0]], lineSize: 3, lineDataSymbolSize: 8, showLegend: false })); this.card(s, p, 9.25, 1.45, 3.55, 5.3);[['Peak month', `${fcLab(tr.keys[mxI])}`, fmt(ys[mxI])], ['Lowest month', `${fcLab(tr.keys[mnI])}`, fmt(ys[mnI])], ['Monthly average', '', fmt(avg(ys))], ['Latest vs previous', '', dd == null ? 'n/a' : pgPct(dd)]].forEach((r, i) => { s.addText(r[0], { x: 9.5, y: 1.7 + i * 1.28, w: 3.1, h: .35, fontSize: 12, bold: true, color: T.mut, fontFace: 'Calibri' }); s.addText(r[2], { x: 9.5, y: 2.0 + i * 1.28, w: 3.1, h: .5, fontSize: 26, bold: true, color: T.ink, fontFace: 'Calibri' }); if (r[1]) s.addText(r[1], { x: 9.5, y: 2.5 + i * 1.28, w: 3.1, h: .3, fontSize: 12, color: T.mut, fontFace: 'Calibri' }) }) } }) }
+                /* 5 categories */
+                if (c0.length) { const b8 = c0.slice(0, 8), d6 = c0.length > 6 ? [...c0.slice(0, 6), ['Other', c0.slice(6).reduce((s, a) => s + a[1], 0)]] : c0; P.push({ t: `${lb} by ${C[0]}`, notes: `${c0[0][0]} is the largest ${C[0]}.`, fn(s, p) { this.base(s, p, `${lb} by ${C[0]}`); this.card(s, p, .5, 1.45, 7, 5.3); s.addChart(p.charts.BAR, [{ name: lb, labels: b8.map(a => pgCut(a[0], 14)), values: b8.map(a => a[1]) }], this.ch({ x: .7, y: 1.6, w: 6.6, h: 5.0, barDir: 'col', valAxisMinVal: 0, chartColors: T.acc.slice(0, b8.length), showLegend: false, showValue: true, dataLabelColor: T.ink, dataLabelFontSize: 11, dataLabelFormatCode: '#,##0' })); this.card(s, p, 7.75, 1.45, 5.05, 5.3); s.addText(`Share of ${lb}`, { x: 8, y: 1.55, w: 4.5, h: .45, fontSize: 16, bold: true, color: T.ink, fontFace: 'Calibri' }); s.addChart(p.charts.DOUGHNUT, [{ name: lb, labels: d6.map(a => pgCut(a[0], 14)), values: d6.map(a => Math.max(a[1], 0)) }], { x: 7.85, y: 2.0, w: 4.85, h: 4.6, holeSize: 58, chartColors: T.acc.slice(0, d6.length), showLegend: true, legendPos: 'b', legendFontSize: 12, legendColor: T.mut, showPercent: true, showValue: false, dataLabelColor: 'FFFFFF', dataLabelFontSize: 12, dataBorder: { pt: 2, color: T.panel } }) } }) }
+                /* 6 top items table */
+                if (c1.length) { const lab = C[1] || C[0]; P.push({ t: `Top ${lab}`, notes: `Ranking of ${lab} by ${lb}.`, fn(s, p) { this.base(s, p, `Top ${lab} by ${lb}`); this.card(s, p, .5, 1.45, 6.2, 5.3); s.addChart(p.charts.BAR, [{ name: lb, labels: c1.map(a => pgCut(a[0], 16)).reverse(), values: c1.map(a => a[1]).reverse() }], this.ch({ x: .6, y: 1.6, w: 6.0, h: 5.0, barDir: 'bar', valAxisMinVal: 0, chartColors: [T.acc[1]], showLegend: false, showValue: true, dataLabelColor: T.ink, dataLabelFontSize: 11, dataLabelFormatCode: '#,##0' })); this.card(s, p, 6.95, 1.45, 5.85, 5.3); const hd = o2 => ({ text: o2, options: { bold: true, color: 'FFFFFF', fill: { color: T.head }, fontFace: 'Calibri', fontSize: 13 } }); s.addTable([[hd('#'), hd(lab), hd(lb), hd('Share')], ...c1.map((a, i) => [{ text: String(i + 1), options: { color: T.mut } }, { text: pgCut(a[0], 18), options: { bold: true, color: T.ink } }, { text: fmt(a[1]), options: { color: T.ink } }, { text: c1t ? (100 * a[1] / c1t).toFixed(1) + '%' : '', options: { color: T.mut } }])], { x: 7.15, y: 1.7, w: 5.45, colW: [.5, 2.15, 1.5, 1.3], fontSize: 13, fontFace: 'Calibri', color: T.ink, fill: { color: T.panel }, border: { type: 'solid', color: T.line, pt: .75 }, rowH: .46 }) } }) }
+                /* 7 relationships */
+                if (bp) { const ns = N.slice(0, 6), pts = rs.filter(r => r[bp[0]] != null && r[bp[1]] != null).slice(0, 300); const yv = pts.map(r => +r[bp[1]]), y0 = Math.min(0, ...yv), q = Math.pow(10, Math.floor(Math.log10((Math.max(...yv) - y0) || 1))), nmin = y0 < 0 ? Math.floor(y0 / q) * q : 0; P.push({ t: 'Relationships', notes: `${bp[0]} and ${bp[1]} have a correlation of ${bp[2].toFixed(2)}.`, fn(s, p) { this.base(s, p, `${bp[0]} vs ${bp[1]} (r = ${bp[2].toFixed(2)})`); this.card(s, p, .5, 1.45, 6.6, 5.3); s.addChart(p.charts.SCATTER, [{ name: 'X-Axis', values: pts.map(r => +r[bp[0]]) }, { name: bp[1], values: pts.map(r => +r[bp[1]]) }], this.ch({ x: .6, y: 1.6, w: 6.4, h: 5.0, chartColors: [T.acc[1]], lineSize: 0, lineDataSymbolSize: 7, valAxisMinVal: nmin, valAxisCrossesAt: nmin, showLegend: false, showValAxisTitle: true, valAxisTitle: bp[1], showCatAxisTitle: true, catAxisTitle: bp[0], valAxisTitleColor: T.mut, catAxisTitleColor: T.mut, valAxisTitleFontSize: 12, catAxisTitleFontSize: 12 })); this.card(s, p, 7.35, 1.45, 5.45, 5.3); s.addText('Correlation matrix', { x: 7.6, y: 1.55, w: 5, h: .45, fontSize: 16, bold: true, color: T.ink, fontFace: 'Calibri' }); const cell = v => ({ text: v.toFixed(2), options: { align: 'center', bold: true, color: Math.abs(v) > .6 ? 'FFFFFF' : T.ink, fill: { color: pgMix(T.panel, v >= 0 ? T.acc[0] : T.acc[2], .12 + .83 * Math.abs(v)) } } }), h2 = t => ({ text: pgCut(t, 8), options: { bold: true, color: T.mut, align: 'center', fontSize: 11 } }); s.addTable([[{ text: '' }, ...ns.map(h2)], ...ns.map(a => [{ text: pgCut(a, 9), options: { bold: true, color: T.mut, fontSize: 11 } }, ...ns.map(b => cell(pear(rs, a, b)))])], { x: 7.6, y: 2.1, w: 4.95, fontSize: 12, fontFace: 'Calibri', border: { type: 'solid', color: T.panel, pt: 2 }, rowH: Math.min(.6, 4.2 / (ns.length + 1)) }) } }) }
+                /* 8 forecast */
+                if (fr) { const hy = fr.y.slice(-18), hk = fr.keys.slice(-18), L = [...hk.map(fcShort), ...fr.fc.map(f => fcShort(f.k))], pad = Array(hy.length - 1).fill(null), pd = Array(fr.fc.length).fill(null); P.push({ t: '3-month forecast', notes: `Model: ${fr.pick.name}. ${sum[sum.length - 1]}`, fn(s, p) { this.base(s, p, `3-month forecast of ${lb}`); this.card(s, p, .5, 1.45, 8.3, 5.3); s.addChart(p.charts.LINE, [{ name: 'Actual', labels: L, values: [...hy, ...pd] }, { name: 'Forecast', labels: L, values: [...pad, hy[hy.length - 1], ...fr.fc.map(f => f.v)] }, { name: 'Low (80%)', labels: L, values: [...pad, hy[hy.length - 1], ...fr.fc.map(f => f.lo)] }, { name: 'High (80%)', labels: L, values: [...pad, hy[hy.length - 1], ...fr.fc.map(f => f.hi)] }], this.ch({ x: .65, y: 1.6, w: 8.0, h: 5.0, chartColors: [T.acc[0], T.acc[1], T.mut, T.mut], lineSize: 3, lineDataSymbolSize: 7, lineDash: ['solid', 'dash', 'sysDot', 'sysDot'], showLegend: true, legendPos: 'b', legendFontSize: 12, legendColor: T.mut, displayBlanksAs: 'gap' })); this.card(s, p, 9.05, 1.45, 3.75, 5.3); const hd = o2 => ({ text: o2, options: { bold: true, color: 'FFFFFF', fill: { color: T.head }, fontSize: 12 } }); s.addTable([[hd('Month'), hd('Predicted'), hd('Range')], ...fr.fc.map(f => [{ text: fcLab(f.k), options: { bold: true, color: T.ink } }, { text: fmt(f.v), options: { bold: true, color: T.acc[0] } }, { text: `${fmt(f.lo)} to ${fmt(f.hi)}`, options: { color: T.mut, fontSize: 10 } }])], { x: 9.2, y: 1.65, w: 3.45, colW: [1.05, 1.0, 1.4], fontSize: 12, fontFace: 'Calibri', fill: { color: T.panel }, border: { type: 'solid', color: T.line, pt: .75 }, rowH: .5 }); s.addText(`Next 3 months: ${fmt(fr.fc.reduce((a, f) => a + f.v, 0))}${fpct != null ? ` (${pgPct(fpct)} vs last 3 months)` : ''}`, { x: 9.2, y: 4.1, w: 3.45, h: .8, fontSize: 14, bold: true, color: T.ink, fontFace: 'Calibri' }); s.addText(`Model: ${fr.pick.name}. The shaded range is an approximate 80% interval; forecasts cannot foresee one-off events.`, { x: 9.2, y: 4.95, w: 3.45, h: 1.6, fontSize: 11, color: T.mut, fontFace: 'Calibri', valign: 'top' }) } }) }
+                /* 9 data quality */
+                const missT = Object.entries(D.miss).filter(e => e[1] > 0).sort((a, b) => b[1] - a[1]).slice(0, 5), outT = Object.entries(o).filter(e => e[1] > 0).sort((a, b) => b[1] - a[1]).slice(0, 5);
+                P.push({ t: 'Data quality', notes: `Data health score ${score}%. ${oc} outliers and ${ms} missing values.`, fn(s, p) { this.base(s, p, 'Data quality');[[comp, 'Completeness'], [dupF, 'Duplicate-free'], [outF, 'Outlier-free']].forEach((q, i) => { const xx = .5 + i * 4.15, c = T.acc[i]; this.card(s, p, xx, 1.45, 4.0, 1.9); s.addText(q[1], { x: xx + .3, y: 1.55, w: 3.4, h: .4, fontSize: 14, bold: true, color: T.mut, fontFace: 'Calibri' }); s.addText(Math.round(q[0]) + '%', { x: xx + .3, y: 1.95, w: 3.4, h: .7, fontSize: 36, bold: true, color: T.ink, fontFace: 'Calibri' }); s.addShape(p.ShapeType.roundRect, { x: xx + .3, y: 2.85, w: 3.4, h: .22, rectRadius: .1, fill: { color: T.line }, line: { color: T.line } }); s.addShape(p.ShapeType.roundRect, { x: xx + .3, y: 2.85, w: Math.max(.15, 3.4 * Math.min(q[0], 100) / 100), h: .22, rectRadius: .1, fill: { color: c }, line: { color: c } }) }); const hd = o2 => ({ text: o2, options: { bold: true, color: 'FFFFFF', fill: { color: T.head }, fontSize: 12 } });[['Missing values by column', missT, `${ms} missing in total`], ['Outliers by column (IQR rule)', outT, `${oc} outliers in total`]].forEach((b, i) => { const xx = .5 + i * 6.25; this.card(s, p, xx, 3.6, 6.05, 3.15); s.addText(b[0], { x: xx + .3, y: 3.7, w: 5.4, h: .45, fontSize: 16, bold: true, color: T.ink, fontFace: 'Calibri' }); if (b[1].length) s.addTable([[hd('Column'), hd('Count')], ...b[1].map(e => [{ text: pgCut(e[0], 28), options: { color: T.ink } }, { text: String(e[1]), options: { bold: true, color: T.acc[i ? 2 : 4] } }])], { x: xx + .3, y: 4.2, w: 5.45, colW: [4, 1.45], fontSize: 12, fontFace: 'Calibri', fill: { color: T.panel }, border: { type: 'solid', color: T.line, pt: .75 }, rowH: .38 }); else s.addText('Nothing to fix here ✓', { x: xx + .3, y: 4.5, w: 5.4, h: .6, fontSize: 18, bold: true, color: T.acc[0], fontFace: 'Calibri' }) }) } });
+                /* 10 conclusions */
+                const con = []; if (c0[0]) con.push(`${c0[0][0]} is the leading ${C[0]} (${share.toFixed(1)}% of ${lb}); review what drives its performance.`); if (tr) { const dd = dl(tr); con.push(`${lb} peaked in ${fcLab(tr.keys[tr.y.indexOf(Math.max(...tr.y))])}${dd != null ? `; the latest month is ${pgPct(dd)} versus the previous month` : ''}.`) } if (fr) con.push(`Plan for about ${fmt(fr.fc.reduce((a, f) => a + f.v, 0))} over the next three months (${fr.pick.name} model).`); if (bp && Math.abs(bp[2]) > .4) con.push(`${bp[0]} and ${bp[1]} move together (r = ${bp[2].toFixed(2)}); use one to anticipate the other.`); con.push(oc ? `Review ${oc} outlier value${oc == 1 ? '' : 's'} before making decisions on this data.` : 'No outliers were found, so the data is ready to use.');
+                P.push({ t: 'Conclusions', notes: con.join(' '), fn(s, p) { this.base(s, p, 'Conclusions and next steps'); this.card(s, p, .5, 1.45, 12.3, 5.3); s.addText(con.map(t => ({ text: t, options: { bullet: { code: '25CF', color: T.acc[1] }, breakLine: true, paraSpaceAfter: 14 } })), { x: .9, y: 1.7, w: 11.5, h: 4.8, fontSize: 22, color: T.ink, fontFace: 'Calibri', valign: 'top' }) } });
+                /* shared drawing helpers */
+                const H = {
+                    base(s, p, title) { s.background = { color: T.bg }; s.addText(title, { x: .5, y: .3, w: 12.3, h: .7, fontSize: 30, bold: true, color: T.ink, fontFace: 'Calibri', fit: 'shrink' }); s.addShape(p.ShapeType.rect, { x: .5, y: 1.05, w: 1.3, h: .07, fill: { color: T.acc[0] }, line: { color: T.acc[0] } }); s.addText(`InsightFlow · ${pgCut(title0, 40)}`, { x: .5, y: 7.0, w: 8, h: .3, fontSize: 10, color: T.mut, fontFace: 'Calibri' }); s.slideNumber = { x: 12.3, y: 7.0, fontSize: 10, color: T.mut, fontFace: 'Calibri' } },
+                    card(s, p, x, y, w, h) { s.addShape(p.ShapeType.roundRect, { x, y, w, h, rectRadius: .12, fill: { color: T.panel }, line: { color: T.line, width: .75 }, shadow: T.dark ? undefined : { type: 'outer', blur: 6, offset: 2, angle: 90, color: '000000', opacity: .1 } }) },
+                    ch(o2) { return Object.assign({ catAxisLabelColor: T.mut, valAxisLabelColor: T.mut, catAxisLabelFontSize: 11, valAxisLabelFontSize: 11, valGridLine: { color: T.line, size: .5 }, catGridLine: { style: 'none' }, valAxisLabelFormatCode: '#,##0', catAxisLabelFontFace: 'Calibri', valAxisLabelFontFace: 'Calibri' }, o2) }
+                }, title0 = title;
+                P.forEach(q => { q.base = H.base; q.card = H.card; q.ch = H.ch });
+                return P
+            }
+            async function pgGenerate() {
+                if (PS.busy) return; PS.busy = true; PS.msg = 'Building your presentation…'; pgRender(true);
+                try {
+                    await pgLoad(); const p = new window.PptxGenJS(); p.layout = 'LAYOUT_WIDE'; p.title = 'InsightFlow analysis'; p.author = 'InsightFlow'; p.company = 'InsightFlow';
+                    pgPlan().forEach(q => { const s = p.addSlide(); q.fn(s, p); s.addNotes(q.notes || '') });
+                    await p.writeFile({ fileName: 'InsightFlow_' + D.name.replace(/\.[^.]+$/, '').replace(/[^\w-]+/g, '_') + '.pptx' }); PS.msg = 'Done! Your PowerPoint was downloaded.'; toast('PowerPoint downloaded')
+                } catch (e) { PS.msg = 'Could not create the PowerPoint: ' + e.message }
+                PS.busy = false; pgRender(true)
+            }
+            function pgRender(force) {
+                const box = $('#pg'); if (!box || !D || !$('#p-pptgen').classList.contains('on')) return;
+                let plan = []; try { plan = pgPlan() } catch (e) { box.innerHTML = `<div class="card"><h2>Could not prepare the slides</h2><p class="sub">${esc(e.message)}</p></div>`; return }
+                const T = PT[PS.theme];
+                box.innerHTML = `<div class="card"><h2>${plan.length} slides will be created</h2><p class="sub">Slides adapt to your data: a chart that needs a date column, a second numeric column and so on is skipped when the data can’t support it. All charts are real PowerPoint charts, so you can edit them.</p><div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:10px">${plan.map((q, i) => `<span style="background:#fff;border:1px solid var(--line);border-left:8px solid #${T.acc[i % 8]};border-radius:12px;padding:8px 14px;font-weight:600">${i + 1}. ${esc(q.t)}</span>`).join('')}</div>${PS.msg ? `<div class="fcnote" style="margin-top:14px;background:var(--soft,#F3EAFB);border-radius:10px;padding:10px 14px">${esc(PS.msg)}</div>` : ''}</div>`;
+                const b = document.querySelector('[data-pg="gen"]'); if (b) { b.disabled = PS.busy; b.textContent = PS.busy ? 'Working…' : '⬇ Generate PowerPoint' }
+            }
+            document.addEventListener('click', e => { if (e.target.closest('[data-go="pptgen"]')) { PS.msg = ''; pgRender() } if (e.target.closest('[data-pg="gen"]')) pgGenerate() });
+            document.addEventListener('change', e => { if (e.target.dataset && e.target.dataset.pgtheme != null) { PS.theme = e.target.value; PS.msg = ''; pgRender() } });
+            document.querySelector('[data-pgtheme]').innerHTML = Object.keys(PT).map(k => `<option value="${k}">${esc(PT[k].n)}</option>`).join('');
+            { const prevFO = fillOther; fillOther = function () { prevFO(); pgRender() } }
+        })();
+    </script>
 </body>
 
 </html>
