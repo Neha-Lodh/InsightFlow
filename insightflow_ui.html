@@ -1437,6 +1437,294 @@
         $('#lo').onclick = $('#lo2').onclick = logout;
         fetch('/api/me', { credentials: 'same-origin' }).then(r => { if (r.status === 401) { toLogin(); throw 0 } return r.json() }).then(j => { ME = j.user; USER = ME.username; $('#un').textContent = USER; $('#nm').value = USER; $('#em').textContent = ME.email; fillDash() }).catch(() => { });
     </script>
+    <!-- ===================================================================
+     INSIGHTFLOW FULL DASHBOARD ADD-ON (premium one-page dashboard image + PNG download)
+     Paste this whole block into insightflow_ui.html, right BEFORE the closing </body> tag.
+     It is self-contained: it works with or without the forecast add-on, and replaces any
+     older version of this add-on (delete the old block first if you pasted one).
+     =================================================================== -->
+    <script>
+        (function () {
+            const nb = document.createElement('button');
+            nb.dataset.go = 'fulldash'; nb.textContent = '🖼️ Full Dashboard';
+            const d = document.querySelector('#nav button[data-go="dash"]');
+            d ? d.after(nb) : document.getElementById('nav').appendChild(nb);
+            const sec = document.createElement('section');
+            sec.className = 'page'; sec.id = 'p-fulldash';
+            sec.innerHTML = '<h1>Full Dashboard</h1><p class="sub">A premium one-page dashboard built automatically from your data. Pick one of 30 colour themes or make your own, then download it as an image.</p><div class="card" style="margin-bottom:16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap"><label style="display:flex;gap:8px;align-items:center;font-weight:600">Style<select data-fdstyle></select></label><button class="btn" data-fd="rand" style="background:#fff;color:var(--pri);border:1px solid var(--line)">🎲 Surprise me</button><button class="btn" data-fd="png">⬇ Download PNG</button><button class="btn" data-fd="regen" style="background:#fff;color:var(--pri);border:1px solid var(--line)">↻ Refresh</button><span class="sub" style="margin:0">Follows the Data Explorer filters.</span></div><div id="fd"></div>';
+            document.getElementById('p-dash').after(sec);
+
+            /* forecast helpers (copied so this add-on works on its own) */
+            const FC = { m: null, t: null, agg: 'sum' }, MONS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'], FC_PHI = .9;
+            const fcLab = k => MONS[+k.slice(5, 7) - 1] + ' ' + k.slice(0, 4), fcShort = k => MONS[+k.slice(5, 7) - 1] + " '" + k.slice(2, 4);
+            const fcIdx = k => +k.slice(0, 4) * 12 + (+k.slice(5, 7) - 1), fcKey = i => Math.floor(i / 12) + '-' + String(i % 12 + 1).padStart(2, '0');
+            const fcDim = k => new Date(Date.UTC(+k.slice(0, 4), +k.slice(5, 7), 0)).getUTCDate();
+
+            // rows -> one value per calendar month (gaps filled, incomplete first/last month detected)
+            function fcSeries(rs, dc, meas, agg) {
+                const M = new Map();
+                rs.forEach(r => {
+                    const t = r[dc]; if (t == null) return; let v = 1;
+                    if (meas) { v = r[meas]; if (v == null || v === '' || isNaN(v)) return; v = +v }
+                    const k = mo(t), d = new Date(t).getUTCDate(), e = M.get(k) || { s: 0, c: 0, a: 99, z: 0 };
+                    e.s += v; e.c++; e.a = Math.min(e.a, d); e.z = Math.max(e.z, d); M.set(k, e)
+                });
+                if (!M.size) return null;
+                const ix = [...M.keys()].map(fcIdx); let lo = Infinity, hi = -Infinity; ix.forEach(i => { if (i < lo) lo = i; if (i > hi) hi = i });
+                const keys = [], y = [], info = [];
+                for (let i = lo; i <= hi; i++) { const k = fcKey(i), e = M.get(k); keys.push(k); info.push(e || null); y.push(e ? (agg == 'mean' ? e.s / e.c : e.s) : null) }
+                for (let i = 0; i < y.length; i++) if (y[i] == null) { let p = i - 1, q = i + 1; while (y[q] == null) q++; y[i] = y[p] + (y[q] - y[p]) * (i - p) / (q - p) }
+                const notes = []; let a = 0, z = keys.length;
+                if (agg != 'mean' && z - a > 4) {   // totals and counts are misleading for a month that is only partly covered
+                    const L = info[z - 1], F = info[a];
+                    if (L && L.z / fcDim(keys[z - 1]) < .8) { notes.push(`${fcLab(keys[z - 1])} only has data up to day ${L.z}, so it is treated as incomplete and is forecast as a full month.`); z-- }
+                    if (F && z - a > 4 && (fcDim(keys[a]) - F.a + 1) / fcDim(keys[a]) < .8) { notes.push(`${fcLab(keys[a])} starts on day ${F.a}, so it was left out when fitting.`); a++ }
+                }
+                const filled = info.slice(a, z).filter(x => !x).length;
+                if (filled) notes.push(`${filled} month(s) without any rows were filled in by interpolation.`);
+                return { keys: keys.slice(a, z), y: y.slice(a, z), notes }
+            }
+
+            // ---- the candidate models ----
+            function fcOLS(y) { const n = y.length; let sx = 0, sy = 0, sxx = 0, sxy = 0; y.forEach((v, i) => { sx += i; sy += v; sxx += i * i; sxy += i * v }); const d = n * sxx - sx * sx || 1, b = (n * sxy - sx * sy) / d; return { a: (sy - b * sx) / n, b } }
+            const FC_MODELS = [
+                {
+                    name: 'Linear trend', min: 3, desc: 'a straight line fitted through all the months',
+                    fit: y => { const { a, b } = fcOLS(y); return { res: y.map((v, i) => v - (a + b * i)), f: h => Array.from({ length: h }, (_, i) => a + b * (y.length + i)) } }
+                },
+                {
+                    name: 'Damped trend (Holt)', min: 4, desc: 'follows the recent level and slope, with the slope flattening over time',
+                    fit: y => {
+                        let best = null;
+                        [.2, .4, .6, .8].forEach(al => [.1, .3, .5].forEach(be => {
+                            let l = y[0], b = y[1] - y[0], sse = 0; const res = [];
+                            for (let i = 1; i < y.length; i++) { const p = l + FC_PHI * b, e = y[i] - p; res.push(e); sse += e * e; const ln = al * y[i] + (1 - al) * p; b = be * (ln - l) + (1 - be) * FC_PHI * b; l = ln }
+                            if (!best || sse < best.sse) best = { l, b, sse, res }
+                        }));
+                        return { res: best.res, f: h => { let s = 0; return Array.from({ length: h }, (_, i) => { s += Math.pow(FC_PHI, i + 1); return best.l + s * best.b }) } }
+                    }
+                },
+                {
+                    name: 'Recent average', min: 3, desc: 'the average of the last 3 months, with no trend',
+                    fit: y => { const w = 3, m = avg(y.slice(-w)); return { res: y.slice(1).map((v, i) => v - avg(y.slice(Math.max(0, i + 1 - w), i + 1))), f: h => Array(h).fill(m) } }
+                },
+                {
+                    name: 'Trend + seasonality', min: 24, desc: 'a straight line plus a typical pattern for each calendar month',
+                    fit: (y, ks) => {
+                        const { a, b } = fcOLS(y), r = y.map((v, i) => v - (a + b * i)), S = Array(12).fill(0), C = Array(12).fill(0);
+                        ks.forEach((k, i) => { const m = +k.slice(5, 7) - 1; S[m] += r[i]; C[m]++ });
+                        const mean = S.reduce((s, v, m) => s + v / (C[m] || 1), 0) / 12, sea = S.map((v, m) => v / (C[m] || 1) - mean);
+                        return { res: y.map((v, i) => r[i] - sea[+ks[i].slice(5, 7) - 1]), f: (h, fk) => Array.from({ length: h }, (_, i) => a + b * (y.length + i) + sea[+fk[i].slice(5, 7) - 1]) }
+                    }
+                }
+            ];
+
+            // test every model on the last 3 known months, keep the best, predict the next 3 months
+            function fcCompute(S) {
+                const y = S.y, n = y.length, H = 3;
+                if (n < 4) return { ok: false, msg: `Only ${n} month${n == 1 ? '' : 's'} of data found. A forecast needs at least 4 months of history.` };
+                const fk = Array.from({ length: H }, (_, i) => fcKey(fcIdx(S.keys[n - 1]) + 1 + i)), notes = [...S.notes];
+                let cmp = [], pick = FC_MODELS[0], hold = 0;
+                if (n >= 9) {
+                    const tr = y.slice(0, n - H), te = y.slice(n - H), tk = S.keys.slice(0, n - H), tf = S.keys.slice(n - H), lvl = Math.abs(avg(te)) || 1;
+                    cmp = FC_MODELS.filter(m => tr.length >= m.min).map(m => { const p = m.fit(tr, tk).f(H, tf), mae = avg(p.map((v, i) => Math.abs(v - te[i]))); return { m, mae, pct: mae / lvl * 100, rmse: Math.sqrt(avg(p.map((v, i) => (v - te[i]) ** 2))) } });
+                    const b = cmp.reduce((x, z) => z.mae < x.mae ? z : x); pick = b.m; hold = b.rmse; b.best = true
+                } else notes.push(`Only ${n} months of history, so the models could not be tested against known months. A linear trend is used; treat this as a rough indication.`);
+                const fit = pick.fit(y, S.keys), p = fit.f(H, fk), df = Math.max(1, fit.res.length - 2), sg = Math.max(Math.sqrt(fit.res.reduce((s, v) => s + v * v, 0) / df), hold), nonneg = y.every(v => v >= 0);
+                const fc = p.map((v, i) => { const w = 1.28 * sg * Math.sqrt(1 + .5 * i); let vv = v, lo = v - w, hi = v + w; if (nonneg) { vv = Math.max(0, v); lo = Math.max(0, lo); hi = Math.max(vv, hi) } return { k: fk[i], v: vv, lo, hi } });
+                const l3 = y.slice(-H), pct = avg(l3) ? (avg(fc.map(f => f.v)) - avg(l3)) / Math.abs(avg(l3)) * 100 : null;
+                return { ok: true, keys: S.keys, y, fc, pick, cmp, notes, pct }
+            }
+
+
+            /* ===== FULL DASHBOARD v2: premium one-page dashboard image (4 styles) + PNG download ===== */
+            const FD = { g: '', W: 1800, H: 0, bg: '#fff', name: 'data', style: 'slate' };
+            const fdCut = (s, n) => { s = String(s); return s.length > n ? s.slice(0, n - 1) + '…' : s };
+            const fdWrap = (s, n) => { const L = []; let c = ''; String(s).split(' ').forEach(w => { if ((c + ' ' + w).trim().length > n) { L.push(c); c = w } else c = (c + ' ' + w).trim() }); if (c) L.push(c); return L };
+            const fdTx = (x, y, s, sz, f, o = {}) => `<text x="${x}" y="${y}" font-size="${sz}" fill="${f}"${o.w ? ` font-weight="${o.w}"` : ''}${o.a ? ` text-anchor="${o.a}"` : ''}${o.op ? ` opacity="${o.op}"` : ''}>${esc(s)}</text>`;
+            const fdNice = (mx, mn = 0) => { const l0 = mn < 0 ? mn : 0, raw = ((mx - l0) || 1) / 4, p = Math.pow(10, Math.floor(Math.log10(raw))), f = raw / p, step = (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * p, lo = l0 < 0 ? Math.floor(l0 / step) * step : 0; let top = Math.ceil(mx / step) * step; if (top - mx < step * .08) top += step; return { top, step, lo } };
+            const fdArc = (cx, cy, r0, r1, a0, a1) => { a1 = Math.min(a1, a0 + 2 * Math.PI - .001); const l = a1 - a0 > Math.PI ? 1 : 0, p = (r, a) => (cx + r * Math.cos(a)).toFixed(1) + ' ' + (cy + r * Math.sin(a)).toFixed(1); return `M${p(r1, a0)}A${r1} ${r1} 0 ${l} 1 ${p(r1, a1)}L${p(r0, a1)}A${r0} ${r0} 0 ${l} 0 ${p(r0, a0)}Z` };
+            const FDT = {
+                slate: () => ({ key: 'slate', bg: ['#2B3453', '#3E4A78'], panel: '#F6F7FC', panelSolid: '#F6F7FC', stroke: '', ink: '#1E2547', mut: '#5B6384', grid: '#E1E4F0', track: '#E3E6F3', acc: ['#4CB38C', '#6B7BE0', '#D9485F', '#F2B84B', '#E57A3C', '#3E9BA8', '#8E6BD8', '#5AA2F0'], head: ['#1B2240', '#2C3764'], hInk: '#fff', shadow: 1 }),
+                neon: () => ({ key: 'neon', bg: ['#0A1B4A', '#02050F'], panel: 'rgba(7,22,63,.78)', panelSolid: '#07163F', stroke: '#2E86E6', ink: '#EAF6FF', mut: '#8DB5E8', grid: 'rgba(110,170,255,.20)', track: 'rgba(120,180,255,.18)', acc: ['#22E5F0', '#FFD43B', '#7EC8FF', '#8EF0A0', '#FF4D6D', '#B79CFF', '#4FA3FF', '#FF9F43'], glow: 1, hInk: '#EAF6FF', neg: '#FF4D6D' }),
+                teal: () => ({ key: 'teal', bg: ['#D9E9E6', '#F6FAF9'], panel: '#FFFFFF', panelSolid: '#FFFFFF', stroke: '#E1ECE9', ink: '#10343A', mut: '#587C80', grid: '#E6EFEC', track: '#E8F1EE', acc: ['#1F9D7A', '#E4574C', '#14365D', '#6CC7A6', '#F2A541', '#3FA7A0', '#0F5F5A', '#F08A7E'], head: ['#0F4F4C', '#1F9D7A'], hInk: '#fff', shadow: 1, neg: '#E4574C' }),
+                app: () => { const cs = getComputedStyle(document.documentElement), v = (n, f) => cs.getPropertyValue(n).trim() || f; return { key: 'app', bg: [v('--bg', '#F3EAFB'), '#FFFFFF'], panel: '#FFFFFF', panelSolid: '#FFFFFF', stroke: v('--line', '#D9C5EE'), ink: v('--ink', '#22145C'), mut: v('--mut', '#5F4E90'), grid: v('--grid2', '#E3D6F3'), track: v('--soft', '#EEE3F9'), acc: PAL.slice(0, 8), head: [PAL[0], PAL[1]], hInk: '#fff', shadow: 1, neg: PAL[1] } }
+            };
+
+            const fdMix = (a, b, k) => { const p = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16)), A = p(a), B = p(b); return '#' + A.map((v, i) => Math.round(v + (B[i] - v) * k).toString(16).padStart(2, '0')).join('') };
+            const fdLum = h => { const [r, g, b] = [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16) / 255); return .2126 * r + .7152 * g + .0722 * b };
+            const FDP = {   /* n name · g group · b background · p cards · i text · m muted text · a 8 accents · h header · d dark */
+                ocean: { n: 'Ocean Blue', g: 'Light', b: ['#DCEBFA', '#F4F9FF'], p: '#FFFFFF', i: '#0B2A4A', m: '#52708F', a: ['#1E88E5', '#00ACC1', '#3949AB', '#26C6DA', '#FFB300', '#43A047', '#8E24AA', '#F4511E'], h: ['#0B3D91', '#1E88E5'] },
+                sunset: { n: 'Sunset Glow', g: 'Light', b: ['#FFE9DC', '#FFF7F2'], p: '#FFFFFF', i: '#3B1A12', m: '#8A5A4A', a: ['#FF6B35', '#F7B801', '#D7263D', '#8E2C6B', '#2E86AB', '#F18F01', '#C73E1D', '#6A4C93'], h: ['#B5301B', '#FF8A3D'] },
+                forest: { n: 'Forest Green', g: 'Light', b: ['#DDEBDD', '#F5FAF3'], p: '#FFFFFF', i: '#123221', m: '#587561', a: ['#2E7D32', '#8BC34A', '#F9A825', '#00695C', '#6D4C41', '#7CB342', '#C0CA33', '#388E3C'], h: ['#14532D', '#2E7D32'] },
+                rose: { n: 'Rose Gold', g: 'Light', b: ['#F8E4E1', '#FFF8F6'], p: '#FFFFFF', i: '#40212A', m: '#8D6670', a: ['#C9788B', '#E8B4A0', '#9C4F66', '#D4A373', '#7A5C61', '#E29578', '#B56576', '#6D597A'], h: ['#8C4A5E', '#D58A9C'] },
+                purple: { n: 'Royal Purple', g: 'Light', b: ['#E9E0FA', '#F8F5FF'], p: '#FFFFFF', i: '#24134D', m: '#6A5A99', a: ['#7C3AED', '#A855F7', '#EC4899', '#6366F1', '#F59E0B', '#14B8A6', '#C026D3', '#4F46E5'], h: ['#4C1D95', '#7C3AED'] },
+                candy: { n: 'Candy Pop', g: 'Light', b: ['#FFE3F1', '#FFF6FB'], p: '#FFFFFF', i: '#4A1038', m: '#9B5B86', a: ['#FF4DA6', '#7C4DFF', '#00C2D1', '#FFB020', '#FF6B6B', '#3DDC97', '#A66CFF', '#FF8FB8'], h: ['#D6197A', '#FF6FB5'] },
+                mint: { n: 'Mint Fresh', g: 'Light', b: ['#DFF5EC', '#F5FFFB'], p: '#FFFFFF', i: '#0F3B2E', m: '#4F8575', a: ['#10B981', '#34D399', '#0EA5E9', '#F59E0B', '#6366F1', '#14B8A6', '#84CC16', '#EC4899'], h: ['#047857', '#10B981'] },
+                coral: { n: 'Coral Reef', g: 'Light', b: ['#FFE5DE', '#E6F7F7'], p: '#FFFFFF', i: '#12363A', m: '#5E8286', a: ['#FF6F61', '#2BB3B1', '#FFC145', '#355C7D', '#F67280', '#6C5B7B', '#99B898', '#C06C84'], h: ['#E4572E', '#17B3B0'] },
+                gold: { n: 'Gold Rush', g: 'Light', b: ['#FBF0D0', '#FFFAEA'], p: '#FFFFFF', i: '#3A2A05', m: '#8A6F2A', a: ['#D4A017', '#B8860B', '#8C5A0B', '#E9B949', '#5B3A29', '#C28A2C', '#A47148', '#F2C94C'], h: ['#6B4A06', '#D4A017'] },
+                autumn: { n: 'Autumn', g: 'Light', b: ['#F6E3CF', '#FFF6EA'], p: '#FFFFFF', i: '#3A1F0F', m: '#8B5E3C', a: ['#C1440E', '#E08E0B', '#7A3E0B', '#9A6A1C', '#6B8E23', '#B5651D', '#8C2F1B', '#D9A441'], h: ['#7A2E0E', '#D9822B'] },
+                earth: { n: 'Earth Tones', g: 'Light', b: ['#E8E2D5', '#F8F5EE'], p: '#FFFFFF', i: '#2E2A1F', m: '#7A7260', a: ['#8D6E4B', '#6B8F71', '#C08552', '#4A6741', '#A68A64', '#7C5E3C', '#8FA382', '#B07D4F'], h: ['#4A3B26', '#8D6E4B'] },
+                berry: { n: 'Berry Blast', g: 'Light', b: ['#F2DDF0', '#FCF5FB'], p: '#FFFFFF', i: '#3A0E3A', m: '#8A4F8A', a: ['#B5179E', '#7209B7', '#F72585', '#3A0CA3', '#4361EE', '#4CC9F0', '#D00064', '#560BAD'], h: ['#560BAD', '#B5179E'] },
+                sky: { n: 'Sky Pastel', g: 'Light', b: ['#E3F2FD', '#FBFDFF'], p: '#FFFFFF', i: '#1B3550', m: '#6E8BA8', a: ['#5FA8F0', '#A98BDB', '#5FBFB4', '#F5A94A', '#EE7BA3', '#7FC686', '#6FB1F5', '#C47FD6'], h: ['#4A90D9', '#8EC5FC'] },
+                corp: { n: 'Corporate Blue', g: 'Light', b: ['#E2E8F0', '#F8FAFC'], p: '#FFFFFF', i: '#0F172A', m: '#64748B', a: ['#2563EB', '#0EA5E9', '#6366F1', '#14B8A6', '#F59E0B', '#EF4444', '#8B5CF6', '#22C55E'], h: ['#0F172A', '#334155'] },
+                gray: { n: 'Grayscale Pro', g: 'Light', b: ['#E5E7EB', '#F9FAFB'], p: '#FFFFFF', i: '#111827', m: '#6B7280', a: ['#111827', '#4B5563', '#9CA3AF', '#374151', '#6B7280', '#B8BEC9', '#1F2937', '#525866'], h: ['#111827', '#4B5563'] },
+                retro: { n: 'Retro Pop', g: 'Light', b: ['#FFF1C9', '#FFFBEA'], p: '#FFFFFF', i: '#2B2118', m: '#7D6B4F', a: ['#E63946', '#F4A261', '#2A9D8F', '#264653', '#E9C46A', '#8338EC', '#06D6A0', '#FF006E'], h: ['#264653', '#E76F51'] },
+                midnight: { n: 'Midnight Violet', g: 'Dark', d: 1, b: ['#1A1033', '#0B0618'], p: '#241848', i: '#F3ECFF', m: '#B7A6E8', a: ['#A78BFA', '#F472B6', '#38BDF8', '#34D399', '#FBBF24', '#FB7185', '#818CF8', '#2DD4BF'], h: ['#3B1F7A', '#7C3AED'] },
+                emerald: { n: 'Dark Emerald', g: 'Dark', d: 1, b: ['#06241C', '#020D0A'], p: '#0C3328', i: '#E6FFF5', m: '#8FCDB5', a: ['#34D399', '#A7F3D0', '#FBBF24', '#38BDF8', '#F472B6', '#84CC16', '#2DD4BF', '#FB923C'], h: ['#064E3B', '#10B981'] },
+                carbon: { n: 'Carbon Orange', g: 'Dark', d: 1, b: ['#1C1C1F', '#0A0A0B'], p: '#26262B', i: '#F5F5F5', m: '#A3A3AD', a: ['#FF7A18', '#FFC53D', '#4ADE80', '#38BDF8', '#F43F5E', '#A78BFA', '#22D3EE', '#FACC15'], h: ['#3A1A00', '#FF7A18'] },
+                deep: { n: 'Deep Ocean', g: 'Dark', d: 1, b: ['#031B34', '#010B17'], p: '#0A2A4A', i: '#E6F4FF', m: '#8FB8DB', a: ['#38BDF8', '#22D3EE', '#818CF8', '#34D399', '#FBBF24', '#F472B6', '#60A5FA', '#2DD4BF'], h: ['#0A3D6E', '#1D8FE1'] },
+                crimson: { n: 'Crimson Night', g: 'Dark', d: 1, b: ['#2A0A12', '#0F0408'], p: '#3A1019', i: '#FFEFF2', m: '#D4A0AB', a: ['#FF4D6D', '#FFB703', '#FB8500', '#E5989B', '#8ECAE6', '#B5838D', '#F72585', '#CDB4DB'], h: ['#7A0C24', '#E11D48'] },
+                cyber: { n: 'Cyber Neon', g: 'Dark', d: 1, b: ['#0D0221', '#05010F'], p: '#1A0B3B', i: '#F5F0FF', m: '#A89BD6', a: ['#00F5D4', '#F15BB5', '#FEE440', '#9B5DE5', '#00BBF9', '#FF6D00', '#80ED99', '#FF006E'], h: ['#240046', '#9D4EDD'] },
+                graphite: { n: 'Graphite Blue', g: 'Dark', d: 1, b: ['#1B2230', '#0D111A'], p: '#252F42', i: '#EEF2FF', m: '#9AA7C2', a: ['#60A5FA', '#34D399', '#FBBF24', '#F87171', '#A78BFA', '#22D3EE', '#F472B6', '#4ADE80'], h: ['#1E293B', '#3B82F6'] },
+                neonmag: { n: 'Neon Magenta', g: 'Neon', f: '#C026D3', br: '#F0ABFC', tt: '#F5D0FE', hs: '#E879F9', hf: 'rgba(60,8,80,.6)', sc: '#F0ABFC', b: ['#1A0630', '#06010F'], p: 'rgba(40,10,70,.78)', ps: '#280A46', i: '#FDF4FF', m: '#D8A8EC', a: ['#F472B6', '#A78BFA', '#22D3EE', '#FBBF24', '#FB7185', '#34D399', '#E879F9', '#60A5FA'] },
+                neongrn: { n: 'Neon Green', g: 'Neon', f: '#22C55E', br: '#86EFAC', tt: '#BBF7D0', hs: '#4ADE80', hf: 'rgba(4,50,24,.6)', sc: '#86EFAC', b: ['#021A0C', '#000805'], p: 'rgba(5,40,22,.78)', ps: '#052816', i: '#ECFDF5', m: '#8FD1A9', a: ['#4ADE80', '#A3E635', '#22D3EE', '#FACC15', '#34D399', '#F472B6', '#86EFAC', '#38BDF8'] }
+            };
+            Object.keys(FDP).forEach(k => { const s = FDP[k]; FDT[k] = s.f ? () => ({ key: 'neon', bg: s.b, panel: s.p, panelSolid: s.ps, stroke: s.f, br: s.br, tt: s.tt, hs: s.hs, hf: s.hf, sc: s.sc, ink: s.i, mut: s.m, grid: 'rgba(255,255,255,.14)', track: 'rgba(255,255,255,.14)', acc: s.a, glow: 1, hInk: s.i, neg: '#FF4D6D' }) : () => ({ key: 'card', dark: !!s.d, bg: s.b, panel: s.p, panelSolid: s.p, stroke: s.d ? fdMix(s.p, s.i, .12) : '', ink: s.i, mut: s.m, grid: fdMix(s.p, s.i, .14), track: fdMix(s.p, s.i, .12), acc: s.a, head: s.h, hInk: '#fff', shadow: 1, neg: s.a[2] }) });
+            FD.custom = { bg: '#EEF2FF', card: '#FFFFFF', ink: '#1B2140', head: '#1E2A5A', a0: '#4F46E5', a1: '#EC4899', a2: '#10B981', a3: '#F59E0B', a4: '#06B6D4' };
+            FDT.custom = () => { const c = FD.custom, dk = fdLum(c.card) < .45, A = [c.a0, c.a1, c.a2, c.a3, c.a4]; A.push(fdMix(c.a0, '#FFFFFF', .35), fdMix(c.a1, '#FFFFFF', .35), fdMix(c.a2, '#FFFFFF', .35)); return { key: 'card', dark: dk, bg: [c.bg, fdMix(c.bg, dk ? '#000000' : '#FFFFFF', .55)], panel: c.card, panelSolid: c.card, stroke: dk ? fdMix(c.card, c.ink, .12) : '', ink: c.ink, mut: fdMix(c.ink, c.card, .42), grid: fdMix(c.card, c.ink, .14), track: fdMix(c.card, c.ink, .12), acc: A, head: [c.head, fdMix(c.head, c.a0, .5)], hInk: '#FFFFFF', shadow: 1, neg: c.a1 } };
+            FDT.slate = (f => () => Object.assign(f(), { neg: '#D9485F' }))(FDT.slate);
+            const FDG = [['Featured', ['slate', 'teal', 'neon', 'app']], ['Light themes', Object.keys(FDP).filter(k => FDP[k].g == 'Light')], ['Dark themes', Object.keys(FDP).filter(k => FDP[k].g == 'Dark')], ['Neon control room', ['neonmag', 'neongrn']], ['Your own', ['custom']]];
+            const FDN = k => ({ slate: 'Slate Navy (premium)', teal: 'Clean Teal (light)', neon: 'Neon Cyan (dark)', app: 'My colour palette', custom: 'Custom colours…' }[k] || FDP[k].n);
+            /* --- building blocks --- */
+            function fdFrame(X, x, y, w, h, title, i) {
+                const T = X.T, neon = T.key == 'neon'; let s = '';
+                if (neon) { s += `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${T.panel}" stroke="${T.stroke}" stroke-opacity=".55"/>` + (title ? `<rect x="${x}" y="${y}" width="${w}" height="48" fill="${T.stroke}" opacity=".16"/>` : '') + `<path d="M${x} ${y + 28}V${y}H${x + 28}M${x + w - 28} ${y + h}H${x + w}V${y + h - 28}" fill="none" stroke="${T.br || '#5CC8FF'}" stroke-width="3"/>` }
+                else s += `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="22" fill="${T.panel}"${T.stroke ? ` stroke="${T.stroke}"` : ''}${T.shadow ? ' filter="url(#sh)"' : ''}/>`;
+                if (title) { s += fdTx(x + 26, y + (neon ? 32 : 42), fdCut(title, Math.floor(w / 13)), neon ? 20 : 23, neon ? (T.tt || '#BFE6FF') : T.ink, { w: 700 }); if (!neon) s += `<circle cx="${x + w - 36}" cy="${y + 36}" r="8" fill="${T.acc[i % 8]}"/>` }
+                return s
+            }
+            function fdSpark(X, v, x, y, w, h, col) {
+                if (!v || v.length < 2) return ''; const mx = Math.max(...v), mn = Math.min(...v), id = X.gid(), P = v.map((a, i) => [x + w * i / (v.length - 1), y + h - (mx == mn ? .5 : (a - mn) / (mx - mn)) * h]);
+                X.defs += `<linearGradient id="${id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${col}" stop-opacity=".4"/><stop offset="1" stop-color="${col}" stop-opacity="0"/></linearGradient>`;
+                const l = P.map(p => p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join('L');
+                return `<path d="M${l}L${x + w} ${y + h}L${x} ${y + h}Z" fill="url(#${id})"/><path d="M${l}" fill="none" stroke="${col}" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"${X.T.glow ? ' filter="url(#glow)"' : ''}/><circle cx="${P[P.length - 1][0]}" cy="${P[P.length - 1][1]}" r="5" fill="${col}"/>`
+            }
+            function fdGauge(X, pct, label, cx, cy, r, col) {
+                const T = X.T, p = Math.max(0, Math.min(100, pct)), c = 2 * Math.PI * r;
+                return `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${T.track}" stroke-width="20"/><circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${col}" stroke-width="20" stroke-linecap="round" stroke-dasharray="${(c * p / 100).toFixed(1)} ${c.toFixed(1)}" transform="rotate(-90 ${cx} ${cy})"${T.glow ? ' filter="url(#glow)"' : ''}/>` + fdTx(cx, cy + 10, Math.round(p) + '%', 30, T.ink, { a: 'middle', w: 700 }) + fdTx(cx, cy + r + 38, label, 17, T.mut, { a: 'middle' })
+            }
+            function fdArea(X, d, x, y, w, h, col) {
+                const T = X.T, L = 56, B = 38, Tp = 16, pw = w - L - 12, ph = h - B - Tp, vs = d.map(a => a[1]), n = d.length, { top, step, lo } = fdNice(Math.max(...vs, 1e-9), Math.min(...vs, 0)), Xp = i => x + L + (n == 1 ? pw / 2 : pw * i / (n - 1)), Yp = v => y + Tp + ph - (v - lo) / ((top - lo) || 1) * ph, id = X.gid();
+                X.defs += `<linearGradient id="${id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${col}" stop-opacity=".45"/><stop offset="1" stop-color="${col}" stop-opacity="0"/></linearGradient>`;
+                let s = ''; for (let v = lo; v <= top + step / 1e3; v += step) s += `<line x1="${x + L}" x2="${x + w - 12}" y1="${Yp(v)}" y2="${Yp(v)}" stroke="${T.grid}"/>` + fdTx(x + L - 10, Yp(v) + 5, fmt(v), 14, T.mut, { a: 'end' });
+                const st = Math.ceil(n / 9); d.forEach((a, i) => { if ((n - 1 - i) % st == 0) s += fdTx(Xp(i), y + h - 12, fdCut(a[0], 9), 14, T.mut, { a: 'middle' }) });
+                const P = d.map((a, i) => Xp(i).toFixed(1) + ' ' + Yp(a[1]).toFixed(1)).join('L');
+                s += `<path d="M${P}L${Xp(n - 1)} ${Yp(lo)}L${Xp(0)} ${Yp(lo)}Z" fill="url(#${id})"/><path d="M${P}" fill="none" stroke="${col}" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"${T.glow ? ' filter="url(#glow)"' : ''}/>`;
+                if (n <= 24) d.forEach((a, i) => s += `<circle cx="${Xp(i)}" cy="${Yp(a[1])}" r="5" fill="${T.panelSolid}" stroke="${col}" stroke-width="3"/>`);
+                return s + fdTx(Xp(n - 1), Yp(vs[n - 1]) - 16, fmt(vs[n - 1]), 16, T.ink, { a: 'end', w: 700 })
+            }
+            function fdBars(X, d, x, y, w, h) {
+                const T = X.T, L = 56, B = 52, Tp = 22, pw = w - L - 12, ph = h - B - Tp, n = d.length, { top, step } = fdNice(Math.max(...d.map(a => a[1]), 1e-9)), bw = pw / n, Yp = v => y + Tp + ph - v / top * ph; let s = '';
+                for (let v = 0; v <= top + step / 1e3; v += step) s += `<line x1="${x + L}" x2="${x + w - 12}" y1="${Yp(v)}" y2="${Yp(v)}" stroke="${T.grid}"/>` + fdTx(x + L - 10, Yp(v) + 5, fmt(v), 14, T.mut, { a: 'end' });
+                d.forEach((a, i) => { const bx = x + L + i * bw + bw * .18, ww = bw * .64, c = T.acc[i % 8]; s += `<rect x="${bx}" y="${Yp(a[1])}" width="${ww}" height="${Math.max(0, Yp(0) - Yp(a[1]))}" rx="8" fill="${c}"${T.glow ? ' filter="url(#glow)"' : ''}/>`; if (n <= 8) s += fdTx(bx + ww / 2, Yp(a[1]) - 8, fmt(a[1]), 15, T.ink, { a: 'middle', w: 600 }); const lx = bx + ww / 2, ly = y + h - 28; s += n > 6 ? `<text transform="translate(${lx} ${ly}) rotate(-28)" font-size="14" fill="${T.mut}" text-anchor="end">${esc(fdCut(a[0], 11))}</text>` : fdTx(lx, ly + 6, fdCut(a[0], 11), 15, T.mut, { a: 'middle' }) });
+                return s
+            }
+            function fdHBars(X, d, x, y, w, h) {
+                const T = X.T, n = d.length, rh = Math.min(52, (h - 6) / n), mx = Math.max(...d.map(a => a[1]), 1e-9), lw = 130, bw = w - lw - 90; let s = '';
+                d.forEach((a, i) => { const yy = y + 4 + i * rh, c = T.acc[i % 8]; s += fdTx(x + lw - 12, yy + rh * .56, fdCut(a[0], 15), 16, T.mut, { a: 'end' }) + `<rect x="${x + lw}" y="${yy + rh * .22}" width="${bw}" height="${rh * .46}" rx="${rh * .23}" fill="${T.track}"/><rect x="${x + lw}" y="${yy + rh * .22}" width="${Math.max(8, bw * a[1] / mx)}" height="${rh * .46}" rx="${rh * .23}" fill="${c}"${T.glow ? ' filter="url(#glow)"' : ''}/>` + fdTx(x + lw + bw + 12, yy + rh * .56, fmt(a[1]), 16, T.ink, { w: 700 }) });
+                return s
+            }
+            function fdDonut(X, d, x, y, w, h) {
+                const T = X.T, tot = d.reduce((s, a) => s + Math.max(a[1], 0), 0) || 1, R0 = Math.min(h / 2 - 14, w * .3), cx = x + R0 + 24, cy = y + h / 2; let a0 = -Math.PI / 2, s = '';
+                d.forEach((a, i) => { const f = Math.max(a[1], 0) / tot, a1 = a0 + f * 2 * Math.PI; if (f > 0) s += `<path d="${fdArc(cx, cy, R0 * .62, R0, a0 + .02, a1 - .02)}" fill="${T.acc[i % 8]}"${T.glow ? ' filter="url(#glow)"' : ''}/>`; a0 = a1 });
+                s += fdTx(cx, cy + 4, fmt(tot), 30, T.ink, { a: 'middle', w: 700 }) + fdTx(cx, cy + 32, 'total', 16, T.mut, { a: 'middle' });
+                const lx = cx + R0 + 40, rh = Math.min(38, (h - 20) / d.length), y0 = cy - d.length * rh / 2;
+                d.forEach((a, i) => { const yy = y0 + i * rh + rh / 2; s += `<rect x="${lx}" y="${yy - 9}" width="18" height="18" rx="5" fill="${T.acc[i % 8]}"/>` + fdTx(lx + 28, yy + 6, fdCut(a[0], 13), 17, T.ink) + fdTx(x + w - 20, yy + 6, (a[1] / tot * 100).toFixed(1) + '%', 17, T.mut, { a: 'end', w: 600 }) });
+                return s
+            }
+            function fdScatter(X, pts, nx, ny, x, y, w, h) {
+                const T = X.T, L = 62, B = 44, Tp = 14, pw = w - L - 16, ph = h - B - Tp, xs = pts.map(p => p[0]), ys = pts.map(p => p[1]), x0 = mn1(xs), x1 = mx1(xs), { top, step, lo } = fdNice(mx1(ys), mn1(ys)), Xp = v => x + L + (v - x0) / ((x1 - x0) || 1) * pw, Yp = v => y + Tp + ph - (v - lo) / ((top - lo) || 1) * ph; let s = '';
+                for (let v = lo; v <= top + step / 1e3; v += step) s += `<line x1="${x + L}" x2="${x + w - 16}" y1="${Yp(v)}" y2="${Yp(v)}" stroke="${T.grid}"/>` + fdTx(x + L - 10, Yp(v) + 5, fmt(v), 14, T.mut, { a: 'end' });
+                pts.forEach(p => s += `<circle cx="${Xp(p[0]).toFixed(1)}" cy="${Yp(p[1]).toFixed(1)}" r="5" fill="${T.acc[1]}" opacity=".55"/>`);
+                const n = pts.length, mx = avg(xs), my = avg(ys); let sxy = 0, sxx = 0; pts.forEach(p => { sxy += (p[0] - mx) * (p[1] - my); sxx += (p[0] - mx) ** 2 }); const b = sxx ? sxy / sxx : 0;
+                s += `<line x1="${Xp(x0)}" y1="${Yp(my + b * (x0 - mx))}" x2="${Xp(x1)}" y2="${Yp(my + b * (x1 - mx))}" stroke="${T.acc[0]}" stroke-width="3.5" stroke-dasharray="10 7"/>`;
+                return s + fdTx(x + L, y + h - 10, fmt(x0), 14, T.mut) + fdTx(x + w - 16, y + h - 10, fmt(x1), 14, T.mut, { a: 'end' }) + fdTx(x + L + pw / 2, y + h - 10, nx + ' →', 15, T.mut, { a: 'middle', w: 600 }) + fdTx(x + L + 6, y + Tp + 14, ny + ' ↑', 15, T.mut, { w: 600 })
+            }
+            function fdHeat(X, labels, M, x, y, w, h) {
+                const T = X.T, n = labels.length, cs = Math.min((w - 110) / n, (h - 56) / n), ox = x + 100 + ((w - 110) - cs * n) / 2, oy = y + 10; let s = '';
+                M.forEach((row, i) => { s += fdTx(ox - 10, oy + i * cs + cs / 2 + 5, fdCut(labels[i], 9), 15, T.mut, { a: 'end' }); row.forEach((v, j) => { const c = v >= 0 ? T.acc[0] : (T.neg || T.acc[2]); s += `<rect x="${ox + j * cs + 2}" y="${oy + i * cs + 2}" width="${cs - 4}" height="${cs - 4}" rx="10" fill="${c}" opacity="${(.14 + .86 * Math.abs(v)).toFixed(2)}"/>` + fdTx(ox + j * cs + cs / 2, oy + i * cs + cs / 2 + 6, v.toFixed(2), 16, T.ink, { a: 'middle', w: 600 }) }) });
+                labels.forEach((l, j) => s += fdTx(ox + j * cs + cs / 2, oy + n * cs + 22, fdCut(l, 9), 15, T.mut, { a: 'middle' }));
+                return s
+            }
+            function fdForecast(X, r, x, y, w, h) {
+                const T = X.T, hy = r.y.slice(-18), hk = r.keys.slice(-18), fc = r.fc, n = hy.length + fc.length, L = 62, B = 40, Tp = 16, pw = w - L - 16, ph = h - B - Tp, all = [...hy, ...fc.flatMap(f => [f.lo, f.hi])], { top, step, lo } = fdNice(Math.max(...all), Math.min(...all, 0)), Xp = i => x + L + pw * i / (n - 1), Yp = v => y + Tp + ph - (v - lo) / ((top - lo) || 1) * ph, last = hy.length - 1, c0 = T.acc[0], c1 = T.acc[3 - (T.key == 'neon' ? 2 : 0)] || T.acc[1]; let s = '';
+                for (let v = lo; v <= top + step / 1e3; v += step) s += `<line x1="${x + L}" x2="${x + w - 16}" y1="${Yp(v)}" y2="${Yp(v)}" stroke="${T.grid}"/>` + fdTx(x + L - 10, Yp(v) + 5, fmt(v), 14, T.mut, { a: 'end' });
+                const lab = [...hk, ...fc.map(f => f.k)], st = Math.ceil(n / 10); lab.forEach((k, i) => { if ((n - 1 - i) % st == 0) s += fdTx(Xp(i), y + h - 12, fcShort(k), 14, T.mut, { a: 'middle' }) });
+                const xd = (Xp(last) + Xp(last + 1)) / 2; s += `<line x1="${xd}" x2="${xd}" y1="${y + Tp}" y2="${y + Tp + ph}" stroke="${T.mut}" stroke-dasharray="5 6" opacity=".6"/>` + fdTx(xd + 10, y + Tp + 18, 'Forecast →', 15, T.mut, { w: 600 });
+                const up = fc.map((f, i) => `${Xp(last + 1 + i)},${Yp(f.hi)}`), dn = fc.map((f, i) => `${Xp(last + 1 + i)},${Yp(f.lo)}`).reverse();
+                s += `<polygon points="${Xp(last)},${Yp(hy[last])} ${up.join(' ')} ${dn.join(' ')}" fill="${c1}" fill-opacity=".22"/>` + `<path d="M${hy.map((v, i) => Xp(i).toFixed(1) + ' ' + Yp(v).toFixed(1)).join('L')}" fill="none" stroke="${c0}" stroke-width="4" stroke-linejoin="round"${T.glow ? ' filter="url(#glow)"' : ''}/>` + hy.map((v, i) => `<circle cx="${Xp(i)}" cy="${Yp(v)}" r="4.5" fill="${c0}"/>`).join('');
+                s += `<path d="M${Xp(last)} ${Yp(hy[last])}${fc.map((f, i) => 'L' + Xp(last + 1 + i) + ' ' + Yp(f.v)).join('')}" fill="none" stroke="${c1}" stroke-width="4" stroke-dasharray="10 8"/>` + fc.map((f, i) => `<circle cx="${Xp(last + 1 + i)}" cy="${Yp(f.v)}" r="7" fill="${c1}" stroke="${T.panelSolid}" stroke-width="2.5"/>` + fdTx(Xp(last + 1 + i), Yp(f.hi) - 12, fmt(f.v), 16, T.ink, { a: 'middle', w: 700 })).join('');
+                return s
+            }
+            /* --- assemble the poster --- */
+            function fdBuild() {
+                const rs = R(), T = FDT[FD.style](), X = { T, n: 0, defs: '', gid() { return 'fd' + (this.n++) } }, W = 1800, M = 40, GP = 24, CW = W - 2 * M, N = cols('numeric'), C = cols('categorical'), Dt = cols('date'), m = MM(N) || null, lb = m || 'Count', ag = m ? 'sum' : 'count';
+                const ser = (meas, agg) => { try { return Dt[0] ? fcSeries(rs, Dt[0], meas, agg) : null } catch (e) { return null } }, top = (c, k) => grp(rs, r => r[c], m, ag).sort((a, b) => b[1] - a[1]).slice(0, k);
+                const sC = ser(null, 'count'), sS = m ? ser(m, 'sum') : null, sA = m ? ser(m, 'mean') : null, dl = S => S && S.y.length > 1 && S.y[S.y.length - 2] ? (S.y[S.y.length - 1] - S.y[S.y.length - 2]) / Math.abs(S.y[S.y.length - 2]) * 100 : null;
+                const o = Object.values(outl(rs)).reduce((a, b) => a + b, 0), ms = Object.values(D.miss).reduce((a, b) => a + b, 0), n0 = D.n || rs.length, cells = n0 * D.cols.length, nv = N.reduce((s, c) => s + vals(rs, c).length, 0);
+                const comp = cells ? 100 * (1 - ms / cells) : 100, dupF = n0 ? 100 * (1 - D.dup / n0) : 100, outF = 100 * (1 - o / Math.max(nv, 1)), c0 = C[0] ? top(C[0], 50) : [], c0t = c0.reduce((s, a) => s + Math.max(a[1], 0), 0), share = c0.length && c0t ? 100 * c0[0][1] / c0t : 100 * rs.length / n0, score = (comp + dupF + outF) / 3;
+                const title = fdCut(D.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase()), 34) + ' · Analytics Dashboard', sub = `${D.n.toLocaleString()} rows · ${D.cols.length} columns · ${new Date().toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}`;
+                let g = `<rect width="${W}" height="__H__" fill="url(#bgg)"/>`;
+                if (T.key == 'neon') { let r = 7; for (let i = 0; i < 160; i++) { r = (r * 9301 + 49297) % 233280; const a = r / 233280; r = (r * 9301 + 49297) % 233280; g += `<circle cx="${(a * W).toFixed(0)}" cy="${(r / 233280 * 1900).toFixed(0)}" r="${(1 + a * 1.6).toFixed(1)}" fill="${T.sc || '#9CC8FF'}" opacity="${(.15 + a * .5).toFixed(2)}"/>` } g += `<path d="M${W / 2 - 560} 28H${W / 2 + 560}L${W / 2 + 620} 90L${W / 2 + 560} 152H${W / 2 - 560}L${W / 2 - 620} 90Z" fill="${T.hf || 'rgba(8,30,90,.65)'}" stroke="${T.hs || '#3FA9FF'}" stroke-width="3" filter="url(#glow)"/>` + fdTx(W / 2, 92, title, 50, T.ink, { a: 'middle', w: 700 }) + fdTx(W / 2, 132, sub, 20, T.mut, { a: 'middle' }) }
+                else { X.defs += `<linearGradient id="hdg" x1="0" x2="1"><stop offset="0" stop-color="${T.head[0]}"/><stop offset="1" stop-color="${T.head[1]}"/></linearGradient><linearGradient id="acg" x1="0" x2="1"><stop offset="0" stop-color="${T.acc[0]}"/><stop offset=".35" stop-color="${T.acc[1]}"/><stop offset=".7" stop-color="${T.acc[3]}"/><stop offset="1" stop-color="${T.acc[2]}"/></linearGradient>`; g += `<rect width="${W}" height="150" fill="url(#hdg)"/><rect y="146" width="${W}" height="5" fill="url(#acg)"/>` + fdTx(M, 76, title, 46, T.hInk, { w: 700 }) + fdTx(M, 116, sub, 22, T.hInk, { op: .85 }) + T.acc.slice(0, 5).map((c, i) => `<circle cx="${W - M - 14 - i * 36}" cy="76" r="13" fill="${c}" stroke="#fff" stroke-width="3"/>`).join('') }
+                /* KPI row */
+                const tp = c0[0], K = [['Records', rs.length.toLocaleString(), dl(sC), sC && sC.y, `${D.cols.length} columns`]];
+                if (m) { const x = vals(rs, m); K.push([`Total ${m}`, fmt(x.reduce((a, b) => a + b, 0)), dl(sS), sS && sS.y, `${x.length.toLocaleString()} values`], [`Average ${m}`, fmt(avg(x)), dl(sA), sA && sA.y, `min ${fmt(mn1(x))} · max ${fmt(mx1(x))}`]) }
+                if (tp) K.push([`Top ${C[0]}`, tp[0], null, null, `${fmt(tp[1])} · ${share.toFixed(1)}% of total`]);
+                K.push(['Data health', Math.round(score) + '%', null, null, `${o} outliers · ${D.dup} duplicates`]);
+                const kw = (CW - GP * (K.length - 1)) / K.length;
+                K.forEach((k, i) => {
+                    const x = M + i * (kw + GP), y = 190, col = T.acc[i % 8]; g += fdFrame(X, x, y, kw, 160, '', i) + fdTx(x + 24, y + 38, fdCut(k[0], 24), 19, T.mut, { w: 600 }) + fdTx(x + 24, y + 96, fdCut(k[1], 12), String(k[1]).length > 9 ? 34 : 46, T.ink, { w: 700 }) + `<rect x="${x}" y="${y + 24}" width="6" height="40" rx="3" fill="${col}"/>`;
+                    if (k[2] != null) g += fdTx(x + 24, y + 138, (k[2] >= 0 ? '▲ ' : '▼ ') + Math.abs(k[2]).toFixed(1) + '%', 18, k[2] >= 0 ? (T.key == 'neon' || T.dark ? '#7EE8A8' : '#1F9D5C') : (T.key == 'neon' || T.dark ? '#FF7B93' : '#D9485F'), { w: 700 }) + fdTx(x + 108, y + 138, 'vs prev. month', 15, T.mut); else g += fdTx(x + 24, y + 138, fdCut(k[4], 28), 16, T.mut);
+                    if (k[3]) g += fdSpark(X, k[3].slice(-12), x + kw - 116, y + 62, 92, 46, col)
+                });
+                /* health gauges + insights */
+                const y2 = 374, gw = 1070; g += fdFrame(X, M, y2, gw, 260, 'Data health', 4);
+                [[comp, 'Completeness'], [dupF, 'Duplicate-free'], [outF, 'Outlier-free'], [share, c0.length ? `Top ${fdCut(C[0], 8)} share` : 'Rows kept']].forEach((q, i) => g += fdGauge(X, q[0], q[1], M + 140 + i * 262, y2 + 134, 64, T.acc[i]));
+                const ins = insights(rs).slice(0, 3), ix = M + gw + GP, iw = CW - gw - GP; g += fdFrame(X, ix, y2, iw, 260, 'Key insights', 5);
+                let yy = y2 + 78; ins.forEach((t, i) => { fdWrap(t, Math.floor((iw - 80) / 9.6)).slice(0, 2).forEach((ln, j) => { g += (j ? '' : `<circle cx="${ix + 34}" cy="${yy - 6}" r="6" fill="${T.acc[i]}"/>`) + fdTx(ix + 52, yy, ln, 18, T.ink); yy += 26 }); yy += 12 });
+                /* chart panels */
+                const hist = c => { const v = vals(rs, c); if (v.length < 2) return []; const a = mn1(v), z = mx1(v), b = (z - a) / 10 || 1, h = Array(10).fill(0); v.forEach(q => h[Math.min(9, Math.floor((q - a) / b))]++); return h.map((c2, i) => [fmt(a + i * b), c2]) };
+                const note = (x, y, w, h) => fdTx(x + w / 2, y + h / 2, 'Not enough data for this chart', 18, T.mut, { a: 'middle' }), panel = (i, x, y, w, h, t, fn) => { g += fdFrame(X, x, y, w, h, t, i); let s = ''; try { s = fn(x + 14, y + 58, w - 28, h - 72) } catch (e) { s = '' } g += s || note(x, y, w, h) };
+                const wW = 1116, nW = CW - wW - GP, tW = (CW - 2 * GP) / 3, y3 = 658, y4 = 1062, y5 = 1446;
+                const sr = sS || sC, trend = sr && sr.y.length > 1 ? sr.keys.map((k, i) => [fcShort(k), sr.y[i]]) : null;
+                panel(0, M, y3, wW, 380, trend ? `${lb} trend by month` : (N[0] ? `Distribution of ${N[0]}` : `${lb} by ${C[0]}`), (x, y, w, h) => trend ? fdArea(X, trend, x, y, w, h, T.acc[0]) : N[0] ? fdBars(X, hist(N[0]), x, y, w, h) : fdBars(X, c0.slice(0, 12), x, y, w, h));
+                const dn = c0.length > 6 ? [...c0.slice(0, 6), ['Other', c0.slice(6).reduce((s, a) => s + a[1], 0)]] : c0;
+                panel(1, M + wW + GP, y3, nW, 380, C[0] ? `Share of ${lb} by ${C[0]}` : 'Distribution', (x, y, w, h) => C[0] ? fdDonut(X, dn, x, y, w, h) : fdBars(X, hist(N[1] || N[0]), x, y, w, h));
+                panel(2, M, y4, tW, 360, C[0] ? `${lb} by ${C[0]}` : 'Distribution', (x, y, w, h) => C[0] ? fdBars(X, c0.slice(0, 8), x, y, w, h) : fdBars(X, hist(N[0]), x, y, w, h));
+                const c1d = C[1] ? top(C[1], 8) : c0.slice(0, 8); panel(3, M + tW + GP, y4, tW, 360, C[1] ? `Top ${C[1]} by ${lb}` : (C[0] ? `Top ${C[0]}` : 'Top values'), (x, y, w, h) => c1d.length ? fdHBars(X, c1d, x, y, w, h) : '');
+                let bp = null; if (N.length > 1) { for (let i = 0; i < N.length; i++)for (let j = i + 1; j < N.length; j++) { const r = pear(rs, N[i], N[j]); if (!bp || Math.abs(r) > Math.abs(bp[2])) bp = [N[i], N[j], r] } }
+                panel(4, M + 2 * (tW + GP), y4, tW, 360, bp ? `${bp[0]} vs ${bp[1]} (r = ${bp[2].toFixed(2)})` : 'Distribution', (x, y, w, h) => bp ? fdScatter(X, rs.filter(r => r[bp[0]] != null && r[bp[1]] != null).slice(0, 400).map(r => [r[bp[0]], r[bp[1]]]), bp[0], bp[1], x, y, w, h) : fdBars(X, hist(N[0]), x, y, w, h));
+                let fr = null; if (m && Dt[0]) { const S = ser(m, 'sum'), r = S && fcCompute(S); if (r && r.ok) fr = r }
+                panel(3, M, y5, wW, 380, fr ? `3-month forecast of ${m}` : (N[1] ? `Distribution of ${N[1]}` : C[0] ? `Ranking by ${C[0]}` : 'Distribution'), (x, y, w, h) => fr ? fdForecast(X, fr, x, y, w, h) : N[1] ? fdBars(X, hist(N[1]), x, y, w, h) : C[0] ? fdBars(X, c0.slice(0, 10), x, y, w, h) : fdBars(X, hist(N[0]), x, y, w, h));
+                const ns = N.slice(0, 6); panel(5, M + wW + GP, y5, nW, 380, ns.length > 2 ? 'Correlation heatmap' : 'Distribution', (x, y, w, h) => ns.length > 2 ? fdHeat(X, ns, ns.map(a => ns.map(b => pear(rs, a, b))), x, y, w, h) : fdBars(X, hist(N[0]), x, y, w, h));
+                const H = y5 + 380 + 70; g += fdTx(M, H - 26, 'Created with InsightFlow', 17, fdLum(T.bg[1]) < .45 ? '#C9D1F2' : T.mut);
+                const defs = `<defs><linearGradient id="bgg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${T.bg[0]}"/><stop offset="1" stop-color="${T.bg[1]}"/></linearGradient><filter id="sh" x="-10%" y="-10%" width="120%" height="130%"><feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#0B1230" flood-opacity=".2"/></filter><filter id="glow" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="3.5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>${X.defs}</defs>`;
+                return { g: defs + g.replace('__H__', H), W, H, bg: T.bg[0] }
+            }
+            function fdSVG(exp) { return `<svg xmlns="http://www.w3.org/2000/svg" font-family="Inter, 'Segoe UI', Arial, sans-serif" ${exp ? `width="${FD.W}" height="${FD.H}"` : 'style="width:100%;height:auto;display:block;border-radius:14px"'} viewBox="0 0 ${FD.W} ${FD.H}">${FD.g}</svg>` }
+            function fdRender() {
+                const box = $('#fd'); if (!box || !D || !$('#p-fulldash').classList.contains('on')) return;
+                try { const r = fdBuild(); Object.assign(FD, r, { name: D.name.replace(/\.[^.]+$/, '').replace(/[^\w-]+/g, '_') }); box.innerHTML = fdSVG(false) } catch (e) { box.innerHTML = `<div class="card"><h2>Could not build the dashboard</h2><p class="sub">${esc(e.message)}</p></div>` }
+            }
+            function fdPNG() {
+                if (!FD.g) return; const url = URL.createObjectURL(new Blob([fdSVG(true)], { type: 'image/svg+xml;charset=utf-8' })), img = new Image();
+                img.onload = () => { const c = document.createElement('canvas'), k = 2; c.width = FD.W * k; c.height = FD.H * k; const x = c.getContext('2d'); x.scale(k, k); x.fillStyle = FD.bg; x.fillRect(0, 0, FD.W, FD.H); x.drawImage(img, 0, 0, FD.W, FD.H); URL.revokeObjectURL(url); c.toBlob(b => { const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = `InsightFlow_dashboard_${FD.name}.png`; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 3000); toast('Dashboard image downloaded') }, 'image/png') };
+                img.onerror = () => toast('Could not create the image in this browser'); img.src = url
+            }
+            const fdSel = () => document.querySelector('[data-fdstyle]'), fdSave = () => { try { localStorage.setItem('if_fd', JSON.stringify({ style: FD.style, custom: FD.custom })) } catch (e) { } };
+            const fdSync = () => { const s = fdSel(), c = document.getElementById('fdCustom'); if (s) s.value = FD.style; if (c) { c.style.display = FD.style == 'custom' ? 'flex' : 'none'; c.querySelectorAll('[data-fdc]').forEach(i => i.value = FD.custom[i.dataset.fdc]) } };
+            try { const sv = JSON.parse(localStorage.getItem('if_fd') || 'null'); if (sv) { if (FDT[sv.style]) FD.style = sv.style; if (sv.custom) Object.assign(FD.custom, sv.custom) } } catch (e) { }
+            fdSel().innerHTML = FDG.map(([g, ks]) => `<optgroup label="${g}">${ks.map(k => `<option value="${k}">${esc(FDN(k))}</option>`).join('')}</optgroup>`).join('');
+            document.getElementById('fd').insertAdjacentHTML('beforebegin', `<div id="fdCustom" class="card" style="display:none;margin-bottom:16px;gap:16px;flex-wrap:wrap;align-items:center">${[['bg', 'Background'], ['card', 'Cards'], ['ink', 'Text'], ['head', 'Header'], ['a0', 'Accent 1'], ['a1', 'Accent 2'], ['a2', 'Accent 3'], ['a3', 'Accent 4'], ['a4', 'Accent 5']].map(([k, l]) => `<label style="display:flex;gap:8px;align-items:center;font-weight:600">${l}<input type="color" data-fdc="${k}" style="width:44px;height:34px;border:1px solid var(--line);border-radius:8px;padding:2px;background:#fff;cursor:pointer"></label>`).join('')}</div>`);
+            fdSync();
+            document.addEventListener('click', e => { if (e.target.closest('[data-go="fulldash"]')) fdRender(); const b = e.target.closest('[data-fd]'); if (b) { if (b.dataset.fd == 'png') fdPNG(); else if (b.dataset.fd == 'rand') { const ks = Object.keys(FDT).filter(k => k != 'custom' && k != FD.style); FD.style = ks[Math.floor(Math.random() * ks.length)]; fdSync(); fdSave(); fdRender() } else fdRender() } });
+            document.addEventListener('change', e => { if (e.target.dataset && e.target.dataset.fdstyle != null) { FD.style = e.target.value; fdSync(); fdSave(); fdRender() } });
+            document.addEventListener('input', e => { const k = e.target.dataset && e.target.dataset.fdc; if (k) { FD.custom[k] = e.target.value; FD.style = 'custom'; fdSel().value = 'custom'; fdSave(); fdRender() } });
+            { const prevFO = fillOther; fillOther = function () { prevFO(); fdRender() } }
+        })();
+    </script>
 </body>
 
 </html>
